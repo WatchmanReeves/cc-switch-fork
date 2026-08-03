@@ -158,6 +158,20 @@ impl PiSkillDeploymentService {
         Self::coordinate_portable_import(|| db.import_portable_sql(source_path))
     }
 
+    /// Keep legacy binary restore outside the Pi ownership domain until the
+    /// independent canonical-restore project can preserve local ledgers
+    /// atomically. The shared Skill boundary prevents a receipt from appearing
+    /// between the live/source checks and the whole-database replacement.
+    pub(crate) fn restore_binary_backup_without_pi_ownership(
+        db: &Database,
+        filename: &str,
+    ) -> Result<String, AppError> {
+        Self::coordinate_portable_import(|| {
+            db.ensure_binary_restore_has_no_pi_ownership(filename)?;
+            db.restore_from_backup(filename)
+        })
+    }
+
     pub(crate) fn reconcile_skill_under_guard(
         _guard: &MutexGuard<'static, ()>,
         db: &Arc<Database>,
@@ -1179,6 +1193,119 @@ mod tests {
             "the intentionally missing import must fail"
         );
         worker.join().expect("worker");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn binary_restore_waits_for_the_skill_ownership_boundary() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let db = Database::memory().expect("database");
+        db.claim_pi_projection_key("local-provider", "local-key")
+            .expect("local ownership");
+        let guard = PiSkillDeploymentService::operation_guard();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).expect("signal worker ready");
+            let result = PiSkillDeploymentService::restore_binary_backup_without_pi_ownership(
+                &db,
+                "missing.db",
+            );
+            result_tx.send(result).expect("signal restore result");
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker reaches restore entry");
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "binary restore must not pass the Pi Skill ownership boundary"
+        );
+        drop(guard);
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("restore proceeds after boundary release")
+            .expect_err("live ownership is rejected");
+        assert!(error.to_string().contains("portable SQL"));
+        worker.join().expect("worker");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn binary_restore_service_rejects_ownership_from_the_selected_backup() {
+        struct EnvGuard(Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvGuard(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        let backup_dir = crate::config::get_app_config_dir().join("backups");
+        fs::create_dir_all(&backup_dir).expect("backup directory");
+        let source = rusqlite::Connection::open(backup_dir.join("owned.db")).expect("owned backup");
+        source
+            .execute_batch(
+                "CREATE TABLE pi_provider_projections (
+                    provider_id TEXT PRIMARY KEY,
+                    provider_key TEXT NOT NULL
+                 );
+                 INSERT INTO pi_provider_projections (provider_id, provider_key)
+                 VALUES ('historical-provider', 'native-key');",
+            )
+            .expect("historical ownership");
+        drop(source);
+
+        let db = Database::memory().expect("database");
+        let error =
+            PiSkillDeploymentService::restore_binary_backup_without_pi_ownership(&db, "owned.db")
+                .expect_err("historical ownership must be rejected before restore");
+        match error {
+            AppError::Localized { en, .. } => {
+                assert!(en.contains("selected backup"));
+                assert!(en.contains("portable SQL"));
+            }
+            other => panic!("expected structured ownership rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn binary_restore_service_keeps_working_without_pi_ownership() {
+        struct EnvGuard(Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvGuard(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        let db = Database::init().expect("live database");
+        let backup = db
+            .backup_database_file()
+            .expect("create backup")
+            .expect("live database exists");
+        let filename = backup
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("backup filename");
+
+        let safety =
+            PiSkillDeploymentService::restore_binary_backup_without_pi_ownership(&db, filename)
+                .expect("empty ownership boundary permits legacy binary restore");
+        assert!(!safety.is_empty());
     }
 
     #[test]

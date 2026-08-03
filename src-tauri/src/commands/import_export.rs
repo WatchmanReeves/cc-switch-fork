@@ -197,11 +197,12 @@ pub async fn restore_db_backup(
         .await
         .map_err(|error| format!("Restore preparation failed: {error}"))?;
 
-    let restore_result =
-        tauri::async_runtime::spawn_blocking(move || db.restore_from_backup(&filename))
-            .await
-            .map_err(|error| AppError::Message(format!("Restore task failed: {error}")))
-            .and_then(|result| result);
+    let restore_result = tauri::async_runtime::spawn_blocking(move || {
+        PiSkillDeploymentService::restore_binary_backup_without_pi_ownership(&db, &filename)
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("Restore task failed: {error}")))
+    .and_then(|result| result);
     let restored = match restore_result {
         Ok(restored) => restored,
         Err(error) => {

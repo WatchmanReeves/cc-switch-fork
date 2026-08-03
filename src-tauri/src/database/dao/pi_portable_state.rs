@@ -10,7 +10,7 @@
 use crate::database::SkillDeploymentMethod;
 use crate::database::{lock_conn, Database, PiProviderProjection, SkillDeployment};
 use crate::error::AppError;
-use rusqlite::params;
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::fs;
 use std::path::Path;
 
@@ -61,6 +61,58 @@ impl Database {
         let backup_id = self.import_sql_string_for_sync(sql)?;
         self.replace_pi_device_local_state(&local)?;
         Ok(backup_id)
+    }
+
+    /// Fail closed before the legacy whole-database restore can import
+    /// device-local Pi ownership evidence.
+    ///
+    /// Canonical binary restore hardening is a separate project. Until that
+    /// boundary can retain the receiving device's ledgers atomically, binary
+    /// restore is supported only when neither side carries ownership rows.
+    pub(crate) fn ensure_binary_restore_has_no_pi_ownership(
+        &self,
+        filename: &str,
+    ) -> Result<(), AppError> {
+        if filename.contains("..")
+            || filename.contains('/')
+            || filename.contains('\\')
+            || !filename.ends_with(".db")
+        {
+            return Err(AppError::InvalidInput(
+                "Invalid backup filename".to_string(),
+            ));
+        }
+
+        {
+            let conn = lock_conn!(self.conn);
+            if pi_device_local_rows_exist(&conn)? {
+                return Err(binary_restore_ownership_error(
+                    "当前数据库",
+                    "current database",
+                ));
+            }
+        }
+
+        let backup_path = crate::config::get_app_config_dir()
+            .join("backups")
+            .join(filename);
+        if !backup_path.exists() {
+            return Err(AppError::InvalidInput(format!(
+                "Backup file not found: {filename}"
+            )));
+        }
+        let source = Connection::open_with_flags(
+            &backup_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| AppError::Database(format!("无法只读检查备份: {error}")))?;
+        if pi_device_local_rows_exist(&source)? {
+            return Err(binary_restore_ownership_error(
+                "所选备份",
+                "selected backup",
+            ));
+        }
+        Ok(())
     }
 
     fn capture_pi_device_local_state(&self) -> Result<PiDeviceLocalState, AppError> {
@@ -181,6 +233,60 @@ impl Database {
             .commit()
             .map_err(|error| AppError::Database(error.to_string()))
     }
+}
+
+fn pi_device_local_rows_exist(conn: &Connection) -> Result<bool, AppError> {
+    let table_exists = |name: &str| -> Result<bool, AppError> {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(|error| AppError::Database(error.to_string()))
+    };
+
+    let projections_exist = if table_exists("pi_provider_projections")? {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pi_provider_projections LIMIT 1)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?
+    } else {
+        false
+    };
+    if projections_exist {
+        return Ok(true);
+    }
+
+    if table_exists("skill_deployments")? {
+        return conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM skill_deployments
+                     WHERE app_type = 'pi'
+                     LIMIT 1
+                 )",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::Database(error.to_string()));
+    }
+    Ok(false)
+}
+
+fn binary_restore_ownership_error(source_zh: &str, source_en: &str) -> AppError {
+    AppError::localized(
+        "pi.binary_restore_device_ownership_unsupported",
+        format!(
+            "为防止历史设备所有权记录覆盖当前 Pi 原生文件，{source_zh}含 Pi 所有权状态时不能使用数据库备份恢复；请改用可移植 SQL 导入"
+        ),
+        format!(
+            "Binary database restore is unavailable because the {source_en} contains device-local Pi ownership state; use portable SQL import instead"
+        ),
+    )
 }
 
 /// Remove complete INSERT statements for the two device-local tables from SQL
@@ -350,6 +456,81 @@ mod tests {
                 .map(|projection| projection.provider_key),
             Some("local-key".to_string())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn binary_restore_guard_rejects_live_ownership_before_opening_the_backup(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        db.claim_pi_projection_key("local-provider", "local-key")?;
+
+        let error = db
+            .ensure_binary_restore_has_no_pi_ownership("missing.db")
+            .expect_err("live ownership must reject before inspecting a source");
+        assert!(error.to_string().contains("portable SQL"));
+        Ok(())
+    }
+
+    #[test]
+    fn binary_restore_guard_rejects_backup_ownership_but_allows_empty_tables(
+    ) -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let empty_path = temp.path().join("empty.db");
+        let owned_path = temp.path().join("owned.db");
+        for path in [&empty_path, &owned_path] {
+            let conn =
+                Connection::open(path).map_err(|error| AppError::Database(error.to_string()))?;
+            conn.execute_batch(
+                "CREATE TABLE pi_provider_projections (
+                    provider_id TEXT PRIMARY KEY,
+                    provider_key TEXT NOT NULL
+                 );
+                 CREATE TABLE skill_deployments (
+                    app_type TEXT NOT NULL
+                 );",
+            )
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        }
+        let owned =
+            Connection::open(&owned_path).map_err(|error| AppError::Database(error.to_string()))?;
+        owned
+            .execute(
+                "INSERT INTO pi_provider_projections (provider_id, provider_key)
+                 VALUES ('historical-provider', 'native-key')",
+                [],
+            )
+            .map_err(|error| AppError::Database(error.to_string()))?;
+
+        let empty = Connection::open_with_flags(
+            &empty_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+        assert!(!pi_device_local_rows_exist(&empty)?);
+        let owned = Connection::open_with_flags(
+            &owned_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+        assert!(pi_device_local_rows_exist(&owned)?);
+        drop(owned);
+
+        let owned =
+            Connection::open(&owned_path).map_err(|error| AppError::Database(error.to_string()))?;
+        owned
+            .execute("DELETE FROM pi_provider_projections", [])
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        owned
+            .execute("INSERT INTO skill_deployments (app_type) VALUES ('pi')", [])
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        drop(owned);
+        let skill_only = Connection::open_with_flags(
+            &owned_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+        assert!(pi_device_local_rows_exist(&skill_only)?);
         Ok(())
     }
 }
