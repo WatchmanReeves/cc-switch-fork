@@ -935,29 +935,7 @@ fn execute_config_command(script: &str) -> Result<String, String> {
     if script.trim().is_empty() {
         return Err("empty Pi config command".to_string());
     }
-    let mut command = if cfg!(windows) {
-        let mut command = Command::new("cmd");
-        command.args(["/D", "/S", "/C", script]);
-        command
-    } else {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", script]);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        command
-    };
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
-        // The shell must not execute user code before it belongs to the
-        // kill-on-close Job Object. Its primary thread is resumed only after
-        // CommandTree::attach succeeds.
-        command.creation_flags(CREATE_SUSPENDED);
-    }
+    let mut command = config_command(script);
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1030,6 +1008,37 @@ fn execute_config_command(script: &str) -> Result<String, String> {
     String::from_utf8(stdout)
         .map(|value| value.trim().to_string())
         .map_err(|_| "Pi config command output is not UTF-8".to_string())
+}
+
+#[cfg(windows)]
+fn config_command(script: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+    let mut command = Command::new("cmd");
+    command.args(["/D", "/S", "/C"]);
+    // `cmd.exe` does not follow the standard Windows argv quoting rules.
+    // The value is intentionally shell source, so preserve it verbatim
+    // instead of letting `Command::arg` add quotes that change `&` and nested
+    // command semantics.
+    command.raw_arg(script);
+    // The shell must not execute user code before it belongs to the
+    // kill-on-close Job Object. Its primary thread is resumed only after
+    // CommandTree::attach succeeds.
+    command.creation_flags(CREATE_SUSPENDED);
+    command
+}
+
+#[cfg(not(windows))]
+fn config_command(script: &str) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", script]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
 }
 
 fn read_bounded(reader: impl Read) -> Result<Vec<u8>, String> {

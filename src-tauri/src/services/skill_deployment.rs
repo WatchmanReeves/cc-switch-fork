@@ -1140,7 +1140,17 @@ fn remove_path(path: &Path) -> Result<(), AppError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(AppError::io(path, error)),
     };
-    if metadata.file_type().is_symlink() || metadata.file_type().is_file() {
+    if metadata.file_type().is_symlink() {
+        #[cfg(windows)]
+        {
+            // Pi Skill deployments create directory symlinks on Windows.
+            fs::remove_dir(path).map_err(|error| AppError::io(path, error))
+        }
+        #[cfg(not(windows))]
+        {
+            fs::remove_file(path).map_err(|error| AppError::io(path, error))
+        }
+    } else if metadata.file_type().is_file() {
         fs::remove_file(path).map_err(|error| AppError::io(path, error))
     } else if metadata.file_type().is_dir() {
         fs::remove_dir_all(path).map_err(|error| AppError::io(path, error))
