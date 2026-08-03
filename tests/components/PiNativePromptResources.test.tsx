@@ -113,6 +113,29 @@ describe("PiNativePromptResources", () => {
     );
   });
 
+  it("does not offer prompt-template names that Pi cannot invoke portably", async () => {
+    renderResources();
+
+    const slug = screen.getByPlaceholderText("pi.prompts.templateSlug");
+    const create = screen.getByRole("button", {
+      name: "pi.prompts.createTemplate",
+    });
+
+    for (const invalid of ["release notes", "bad:name", "CON"]) {
+      fireEvent.change(slug, { target: { value: invalid } });
+      expect(create).toBeDisabled();
+      expect(
+        screen.getByText("pi.prompts.templateSlugInvalid"),
+      ).toBeInTheDocument();
+    }
+
+    fireEvent.change(slug, { target: { value: "release.v2" } });
+    expect(create).toBeEnabled();
+    expect(
+      screen.queryByText("pi.prompts.templateSlugInvalid"),
+    ).not.toBeInTheDocument();
+  });
+
   it("requires confirmation before creating the dangerous SYSTEM override", async () => {
     renderResources();
 
@@ -122,9 +145,7 @@ describe("PiNativePromptResources", () => {
     fireEvent.change(instructionEditors[0], {
       target: { value: "replace the system prompt" },
     });
-    fireEvent.click(
-      screen.getAllByRole("button", { name: "common.save" })[0],
-    );
+    fireEvent.click(screen.getAllByRole("button", { name: "common.save" })[0]);
 
     expect(promptsApi.replacePiPromptFile).not.toHaveBeenCalled();
     expect(

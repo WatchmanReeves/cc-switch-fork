@@ -14,6 +14,7 @@ import {
   type PiPromptFileSnapshot,
   type PiPromptTemplate,
 } from "@/lib/api/prompts";
+import { isValidPiPromptTemplateSlug } from "@/lib/piPromptSlug";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
 const EDITABLE_FILES: Array<{
@@ -304,13 +305,14 @@ export function PiNativePromptResources() {
   const queryClient = useQueryClient();
   const [slug, setSlug] = useState("");
   const [content, setContent] = useState("");
+  const slugIsValid = isValidPiPromptTemplateSlug(slug);
   const templates = useQuery({
     queryKey: ["pi", "promptTemplates"],
     queryFn: () => promptsApi.listPiPromptTemplates(),
   });
   const createTemplate = useMutation({
     mutationFn: () =>
-      promptsApi.upsertPiPromptTemplate(slug.trim(), "missing", content),
+      promptsApi.upsertPiPromptTemplate(slug, "missing", content),
     onSuccess: async () => {
       setSlug("");
       setContent("");
@@ -383,7 +385,13 @@ export function PiNativePromptResources() {
             value={slug}
             onChange={(event) => setSlug(event.target.value)}
             placeholder={t("pi.prompts.templateSlug")}
+            aria-invalid={slug.length > 0 && !slugIsValid}
           />
+          {slug.length > 0 && !slugIsValid && (
+            <p className="mt-1 text-xs text-destructive">
+              {t("pi.prompts.templateSlugInvalid")}
+            </p>
+          )}
           <Textarea
             value={content}
             onChange={(event) => setContent(event.target.value)}
@@ -396,7 +404,7 @@ export function PiNativePromptResources() {
               type="button"
               size="sm"
               onClick={() => createTemplate.mutate()}
-              disabled={!slug.trim() || createTemplate.isPending}
+              disabled={!slugIsValid || createTemplate.isPending}
             >
               {createTemplate.isPending && (
                 <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />

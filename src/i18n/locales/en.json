@@ -994,6 +994,7 @@
       "templatesDescription": "Each prompts/<slug>.md file is invoked by Pi as /<slug>.",
       "newTemplate": "New prompt template",
       "templateSlug": "Template slug (for example: review)",
+      "templateSlugInvalid": "Use one command token without spaces or filename-reserved characters.",
       "templateContent": "Template Markdown",
       "createTemplate": "Create template",
       "templateCreated": "Pi prompt template created",

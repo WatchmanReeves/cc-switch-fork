@@ -285,21 +285,60 @@ fn validate_direct_instruction_content(content: &str) -> Result<(), AppError> {
 }
 
 fn validate_template_slug(slug: &str) -> Result<(), AppError> {
+    // Pinned Pi's request-capture discovers `release notes.md`, but
+    // expandPromptTemplate("/release notes", ...) leaves the command
+    // unchanged because slash-command names are one token. Keep the managed
+    // namespace both callable and portable across Unix and Windows.
+    let windows_basename = slug
+        .split_once('.')
+        .map_or(slug, |(basename, _extension)| basename);
+    let windows_basename = windows_basename.to_ascii_lowercase();
+    let windows_reserved = matches!(
+        windows_basename.as_str(),
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    );
     let valid = !slug.is_empty()
         && slug.len() <= MAX_TEMPLATE_SLUG_BYTES
         && slug != "."
         && slug != ".."
-        && slug.trim() == slug
         && !slug.starts_with('.')
         && !slug.ends_with('.')
-        && !slug
-            .chars()
-            .any(|character| character.is_control() || matches!(character, '/' | '\\'));
+        && !windows_reserved
+        && !slug.chars().any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+        });
     if valid {
         Ok(())
     } else {
         Err(AppError::InvalidInput(
-            "Pi prompt-template slug must be one visible filename (1-128 UTF-8 bytes)".to_string(),
+            "Pi prompt-template slug must be one portable slash-command token (1-128 UTF-8 bytes)"
+                .to_string(),
         ))
     }
 }
@@ -408,8 +447,16 @@ mod tests {
             ".hidden",
             "trailing.",
             " padded",
+            "internal space",
+            "tab\tname",
             "a/b",
             r"a\b",
+            "bad:name",
+            "bad*name",
+            "CON",
+            "con.anything",
+            "LPT9",
+            "nul.json",
         ] {
             assert!(validate_template_slug(slug).is_err(), "{slug:?}");
         }

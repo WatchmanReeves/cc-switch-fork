@@ -141,6 +141,23 @@ impl PiSkillDeploymentService {
         deployment_lock()
     }
 
+    /// Serialize a portable database/SSOT replacement with every Pi Skill
+    /// deployment mutation. Callers already hold Pi's switch boundary, so the
+    /// global lock order remains `Pi switch -> Skill deployment`.
+    pub(crate) fn coordinate_portable_import<T>(
+        operation: impl FnOnce() -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let _guard = Self::operation_guard();
+        operation()
+    }
+
+    pub(crate) fn import_portable_sql(
+        db: &Database,
+        source_path: &Path,
+    ) -> Result<String, AppError> {
+        Self::coordinate_portable_import(|| db.import_portable_sql(source_path))
+    }
+
     pub(crate) fn reconcile_skill_under_guard(
         _guard: &MutexGuard<'static, ()>,
         db: &Arc<Database>,
@@ -1125,6 +1142,44 @@ fn remove_path(path: &Path) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use crate::app_config::SkillApps;
+
+    #[test]
+    #[serial_test::serial]
+    fn portable_import_waits_for_the_skill_ownership_boundary() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let db = Database::memory().expect("database");
+        let missing = tempfile::tempdir()
+            .expect("tempdir")
+            .path()
+            .join("missing.sql");
+        let guard = PiSkillDeploymentService::operation_guard();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).expect("signal worker ready");
+            let result = PiSkillDeploymentService::import_portable_sql(&db, &missing);
+            result_tx.send(result).expect("signal import result");
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker reaches import entry");
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "portable import must not pass capture/publish while a Skill mutation owns the boundary"
+        );
+        drop(guard);
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("import proceeds after ownership boundary release");
+        assert!(
+            result.is_err(),
+            "the intentionally missing import must fail"
+        );
+        worker.join().expect("worker");
+    }
 
     #[test]
     fn digest_includes_hidden_files_and_rejects_symlinks() {

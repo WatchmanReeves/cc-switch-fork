@@ -141,7 +141,7 @@ writeFileSync(
     `export { composeModelProvider } from "${PI}/packages/coding-agent/src/core/provider-composer.ts";`,
     `export { resolveConfigValueOrThrow } from "${PI}/packages/coding-agent/src/core/resolve-config-value.ts";`,
     `export { loadSkills } from "${PI}/packages/coding-agent/src/core/skills.ts";`,
-    `export { loadPromptTemplates } from "${PI}/packages/coding-agent/src/core/prompt-templates.ts";`,
+    `export { loadPromptTemplates, expandPromptTemplate } from "${PI}/packages/coding-agent/src/core/prompt-templates.ts";`,
     `export { SessionManager } from "${PI}/packages/coding-agent/src/core/session-manager.ts";`,
     `export { parseArgs } from "${PI}/packages/coding-agent/src/cli/args.ts";`,
     `export { createAllToolDefinitions } from "${PI}/packages/coding-agent/src/core/tools/index.ts";`,
@@ -529,33 +529,47 @@ writeFileSync(
   join(promptAgentDir, "prompts", "review.md"),
   "---\ndescription: Review captured changes\nargument-hint: <range>\n---\nReview $1\n",
 );
+writeFileSync(
+  join(promptAgentDir, "prompts", "release notes.md"),
+  "This spaced filename cannot be addressed as one slash-command token.\n",
+);
+writeFileSync(join(promptAgentDir, "prompts", "release.v2.md"), "Release $1\n");
+writeFileSync(join(promptAgentDir, "prompts", "评审.md"), "评审 $1\n");
 writeFileSync(join(promptAgentDir, "prompts", "empty.md"), "");
 writeFileSync(
   join(promptAgentDir, "prompts", "nested", "ignored.md"),
   "nested",
 );
+const loadedPromptTemplates = adapters.loadPromptTemplates({
+  cwd: promptProjectDir,
+  agentDir: promptAgentDir,
+  promptPaths: [],
+  includeDefaults: true,
+});
 const promptTemplateDiscovery = jsonSafeJavaScriptValue(
-  adapters
-    .loadPromptTemplates({
-      cwd: promptProjectDir,
-      agentDir: promptAgentDir,
-      promptPaths: [],
-      includeDefaults: true,
-    })
-    .map((template) => ({
-      name: template.name,
-      description: template.description,
-      argumentHint: template.argumentHint,
-      content: template.content,
-      source: template.sourceInfo?.source,
-      scope: template.sourceInfo?.scope,
-      relativeFile:
-        template.filePath ===
-        join(promptAgentDir, "prompts", `${template.name}.md`)
-          ? `prompts/${template.name}.md`
-          : template.filePath,
-    })),
+  loadedPromptTemplates.map((template) => ({
+    name: template.name,
+    description: template.description,
+    argumentHint: template.argumentHint,
+    content: template.content,
+    source: template.sourceInfo?.source,
+    scope: template.sourceInfo?.scope,
+    relativeFile:
+      template.filePath ===
+      join(promptAgentDir, "prompts", `${template.name}.md`)
+        ? `prompts/${template.name}.md`
+        : template.filePath,
+  })),
 );
+const promptTemplateExpansion = [
+  "/review captured-range",
+  "/release notes",
+  "/release.v2 captured-range",
+  "/评审 变更",
+].map((input) => ({
+  input,
+  result: adapters.expandPromptTemplate(input, loadedPromptTemplates),
+}));
 
 // File presence, including a zero-byte file, is the native activation state
 // for Pi's global instruction resources. Execute the real resource loader so
@@ -717,9 +731,7 @@ writeFileSync(
   [
     JSON.stringify(capturedSession.getHeader()),
     "{not valid json",
-    ...capturedSession
-      .getEntries()
-      .map((entry) => JSON.stringify(entry)),
+    ...capturedSession.getEntries().map((entry) => JSON.stringify(entry)),
     "",
   ].join("\n"),
 );
@@ -763,6 +775,7 @@ console.log(
       resolverCases,
       skillDiscovery,
       promptTemplateDiscovery,
+      promptTemplateExpansion,
       emptyInstructionFiles,
       sessionDirectorySemantics,
       sessionCliSemantics,

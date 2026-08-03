@@ -300,17 +300,18 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
 
 /// Durable same-directory atomic replacement.
 ///
-/// Existing permissions are preserved. `new_file_mode` controls only a newly
-/// created Unix file (settings and other local secrets pass `0o600`). The
-/// temporary file is created exclusively, synced before replacement, and the
-/// containing directory is synced afterwards on Unix.
+/// Existing permissions are preserved when `required_file_mode` is `None`.
+/// Sensitive callers pass an explicit mode (for example `0o600`), which is
+/// enforced for both new and existing Unix files before the replacement
+/// becomes visible. The temporary file is created exclusively, synced before
+/// replacement, and the containing directory is synced afterwards on Unix.
 pub(crate) fn atomic_write_durable(
     path: &Path,
     data: &[u8],
-    new_file_mode: Option<u32>,
+    required_file_mode: Option<u32>,
 ) -> Result<(), AppError> {
     #[cfg(not(unix))]
-    let _ = new_file_mode;
+    let _ = required_file_mode;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
@@ -334,7 +335,7 @@ pub(crate) fn atomic_write_durable(
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.mode(new_file_mode.unwrap_or(0o666));
+            options.mode(required_file_mode.unwrap_or(0o666));
         }
         let mut file = options
             .open(&tmp)
@@ -342,18 +343,20 @@ pub(crate) fn atomic_write_durable(
         file.write_all(data)
             .map_err(|error| AppError::io(&tmp, error))?;
         file.flush().map_err(|error| AppError::io(&tmp, error))?;
-        file.sync_all().map_err(|error| AppError::io(&tmp, error))?;
-        drop(file);
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(path)
-                .map(|metadata| metadata.permissions().mode())
-                .unwrap_or_else(|_| new_file_mode.unwrap_or(0o666));
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))
+            let mode = required_file_mode.unwrap_or_else(|| {
+                fs::metadata(path)
+                    .map(|metadata| metadata.permissions().mode())
+                    .unwrap_or(0o666)
+            });
+            file.set_permissions(fs::Permissions::from_mode(mode))
                 .map_err(|error| AppError::io(&tmp, error))?;
         }
+        file.sync_all().map_err(|error| AppError::io(&tmp, error))?;
+        drop(file);
 
         replace_file_atomically(&tmp, path)?;
         #[cfg(unix)]
@@ -557,6 +560,30 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&sort_json_keys(&empty_arr)).unwrap(),
             "[]"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sensitive_atomic_write_tightens_an_existing_file_before_publish() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("settings.json");
+        fs::write(&path, b"old").expect("seed settings");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .expect("make legacy settings permissive");
+
+        atomic_write_durable(&path, b"new-secret", Some(0o600)).expect("replace settings");
+
+        assert_eq!(fs::read(&path).expect("read settings"), b"new-secret");
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("settings metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
         );
     }
 

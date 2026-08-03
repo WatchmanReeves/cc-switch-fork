@@ -994,6 +994,7 @@
       "templatesDescription": "prompts/<slug>.md の各ファイルは、Pi で /<slug> として呼び出せます。",
       "newTemplate": "新しいプロンプトテンプレート",
       "templateSlug": "テンプレートスラッグ（例: review）",
+      "templateSlugInvalid": "空白やファイル名の予約文字を含まない、1 つのコマンド名を入力してください。",
       "templateContent": "テンプレート Markdown",
       "createTemplate": "テンプレートを作成",
       "templateCreated": "Pi プロンプトテンプレートを作成しました",

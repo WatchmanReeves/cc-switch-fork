@@ -12,6 +12,7 @@ use crate::database::backup::BackupEntry;
 use crate::database::Database;
 use crate::error::AppError;
 use crate::services::provider::ProviderService;
+use crate::services::skill_deployment::PiSkillDeploymentService;
 use crate::store::AppState;
 
 // ─── File import/export ──────────────────────────────────────
@@ -57,7 +58,7 @@ pub async fn import_config_from_file(
 
     let import_path = filePath.clone();
     let import_result = tauri::async_runtime::spawn_blocking(move || {
-        db.import_portable_sql(&PathBuf::from(import_path))
+        PiSkillDeploymentService::import_portable_sql(&db, &PathBuf::from(import_path))
     })
     .await
     .map_err(|error| AppError::Message(format!("SQL import task failed: {error}")))

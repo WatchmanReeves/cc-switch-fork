@@ -994,6 +994,7 @@
       "templatesDescription": "每个 prompts/<标识>.md 文件都可在 Pi 中通过 /<标识> 调用。",
       "newTemplate": "新建提示词模板",
       "templateSlug": "模板标识（例如 review）",
+      "templateSlugInvalid": "请输入不含空格或文件名保留字符的单个命令标识。",
       "templateContent": "模板 Markdown 内容",
       "createTemplate": "创建模板",
       "templateCreated": "Pi 提示词模板已创建",

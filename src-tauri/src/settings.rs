@@ -1373,6 +1373,55 @@ mod tests {
     use super::*;
     use crate::app_config::AppType;
 
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn saving_a_gateway_token_tightens_legacy_settings_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct EnvGuard(Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvGuard(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        let path = AppSettings::settings_path().expect("settings path");
+        fs::create_dir_all(path.parent().expect("settings parent")).expect("settings directory");
+        fs::write(&path, b"{}").expect("legacy settings");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .expect("make legacy settings permissive");
+
+        let token = GatewayToken::generate();
+        let expected = token.expose().to_string();
+        let settings = AppSettings {
+            pi_gateway_token: Some(token),
+            ..AppSettings::default()
+        };
+        save_settings_file(&settings).expect("save sensitive settings");
+
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("settings metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(
+            fs::read_to_string(&path)
+                .expect("settings body")
+                .contains(&expected),
+            "the permission assertion must exercise a persisted Pi gateway token"
+        );
+    }
+
     #[test]
     fn visible_apps_old_settings_default_claude_desktop_visible() {
         let visible: VisibleApps = serde_json::from_value(serde_json::json!({

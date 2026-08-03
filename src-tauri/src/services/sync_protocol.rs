@@ -311,6 +311,16 @@ pub(crate) fn apply_snapshot(
     db_sql: &[u8],
     skills_zip: &[u8],
 ) -> Result<(), AppError> {
+    crate::services::skill_deployment::PiSkillDeploymentService::coordinate_portable_import(|| {
+        apply_snapshot_under_pi_skill_guard(db, db_sql, skills_zip)
+    })
+}
+
+fn apply_snapshot_under_pi_skill_guard(
+    db: &crate::database::Database,
+    db_sql: &[u8],
+    skills_zip: &[u8],
+) -> Result<(), AppError> {
     let sql_str = std::str::from_utf8(db_sql).map_err(|e| {
         localized(
             "sync.sql_not_utf8",
@@ -418,6 +428,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn snapshot_application_waits_for_the_pi_skill_ownership_boundary() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let db = crate::database::Database::memory().expect("database");
+        let guard = crate::services::skill_deployment::PiSkillDeploymentService::operation_guard();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).expect("signal worker ready");
+            let result = apply_snapshot(&db, &[0xff], &[]);
+            result_tx.send(result).expect("signal snapshot result");
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker reaches snapshot entry");
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "WebDAV/S3 snapshot application must wait for a concurrent Pi Skill mutation"
+        );
+        drop(guard);
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("snapshot proceeds after ownership boundary release");
+        assert!(result.is_err(), "the intentionally invalid SQL must fail");
+        worker.join().expect("worker");
+    }
 
     fn artifact(sha256: &str, size: u64) -> ArtifactMeta {
         ArtifactMeta {

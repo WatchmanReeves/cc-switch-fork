@@ -995,6 +995,7 @@
       "templatesDescription": "每個 prompts/<slug>.md 檔案都可在 Pi 中透過 /<slug> 呼叫。",
       "newTemplate": "新增提示範本",
       "templateSlug": "範本識別碼（例如：review）",
+      "templateSlugInvalid": "請輸入不含空格或檔名保留字元的單一指令識別碼。",
       "templateContent": "範本 Markdown",
       "createTemplate": "建立範本",
       "templateCreated": "Pi 提示範本已建立",
