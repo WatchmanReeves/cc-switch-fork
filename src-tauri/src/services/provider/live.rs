@@ -1292,7 +1292,21 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
     // Pi's portable-import boundary closes runtime admission before replacing
     // SQLite. Recover it first so an unrelated application's broken live file
     // cannot strand Pi in that closed state.
-    crate::services::pi_catalog::PiCatalogCoordinator::reconcile_portable_import(state)?;
+    let mut pi_failures = Vec::new();
+    if let Err(error) =
+        crate::services::pi_catalog::PiCatalogCoordinator::reconcile_portable_import(state)
+    {
+        pi_failures.push(format!("provider={error}"));
+    }
+    if let Err(error) = crate::services::skill::SkillService::sync_to_app(&state.db, &AppType::Pi) {
+        pi_failures.push(format!("skill={error}"));
+    }
+    if !pi_failures.is_empty() {
+        return Err(AppError::Config(format!(
+            "Pi live reconciliation incomplete: {}",
+            pi_failures.join("; ")
+        )));
+    }
 
     // Preserve the existing fail-fast behavior for all other provider views.
     for app_type in AppType::all().filter(|app_type| !matches!(app_type, AppType::Pi)) {
@@ -1318,7 +1332,7 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
     }
 
     // Continue through all apps so one collision cannot hide unrelated Skills.
-    for app_type in AppType::all() {
+    for app_type in AppType::all().filter(|app_type| !matches!(app_type, AppType::Pi)) {
         if let Err(error) = crate::services::skill::SkillService::sync_to_app(&state.db, &app_type)
         {
             log::warn!("同步 Skill 到 {app_type:?} 失败: {error}");

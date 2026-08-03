@@ -154,7 +154,25 @@ impl PiSkillDeploymentService {
         db: &Arc<Database>,
     ) -> Result<(), AppError> {
         let mut failures = Vec::new();
-        for skill in db.get_all_installed_skills()?.values() {
+        let skills = db.get_all_installed_skills()?;
+
+        // The portable catalog may delete or replace a Skill while this
+        // device's ownership receipt is deliberately retained across import.
+        // Consume those orphaned receipts first: they are the only authority
+        // that permits removing the corresponding native destination safely.
+        for deployment in db.get_all_pi_skill_deployments()? {
+            if !skills.contains_key(&deployment.skill_id) {
+                let skill_id = deployment.skill_id.clone();
+                if let Err(error) = remove_recorded_deployment(db, &skill_id, deployment) {
+                    log::warn!(
+                        "orphaned Pi Skill deployment '{skill_id}' could not be reconciled: {error}"
+                    );
+                    failures.push(format!("{skill_id}={error}"));
+                }
+            }
+        }
+
+        for skill in skills.values() {
             // Portable sync and old databases may contain a poisoned directory
             // name. Reject it before any path join, but do not let that inert
             // row hide every valid Pi Skill during startup/storage migration.
@@ -439,7 +457,7 @@ fn cleanup_stale_deployments(
 ) -> Result<(), AppError> {
     for deployment in db.get_pi_skill_deployments(&skill.id)? {
         if deployment.destination_key != current_destination_key {
-            remove_recorded_deployment(db, skill, deployment)?;
+            remove_recorded_deployment(db, &skill.id, deployment)?;
         }
     }
     Ok(())
@@ -475,32 +493,38 @@ fn remove_all_recorded_deployments(
         db.set_pi_skill_desired(&skill.id, desired_enabled)?;
     }
     for deployment in db.get_pi_skill_deployments(&skill.id)? {
-        remove_recorded_deployment(db, skill, deployment)?;
+        remove_recorded_deployment(db, &skill.id, deployment)?;
     }
     Ok(())
 }
 
 fn remove_recorded_deployment(
     db: &Arc<Database>,
-    skill: &InstalledSkill,
+    skill_id: &str,
     deployment: SkillDeployment,
 ) -> Result<(), AppError> {
+    if deployment.skill_id != skill_id {
+        return Err(AppError::Conflict(format!(
+            "Pi Skill deployment identity changed from '{skill_id}' to '{}'",
+            deployment.skill_id
+        )));
+    }
     let destination = PathBuf::from(&deployment.destination);
     if destination_key(&destination) != deployment.destination_key {
         return Err(AppError::Conflict(format!(
             "Pi Skill '{}' has inconsistent recorded destination identity",
-            skill.id
+            skill_id
         )));
     }
     match fs::symlink_metadata(&destination) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            db.delete_pi_skill_deployment(&skill.id, &deployment.destination_key)?;
+            db.delete_pi_skill_deployment(skill_id, &deployment.destination_key)?;
             Ok(())
         }
         Err(error) => Err(AppError::io(&destination, error)),
         Ok(_) => {
             let key = deployment.destination_key.clone();
-            remove_owned(db, skill, &destination, &key, Some(deployment), None)
+            remove_owned(db, skill_id, &destination, &key, Some(deployment), None)
         }
     }
 }
@@ -730,7 +754,7 @@ fn deploy(
 
 fn remove_owned(
     db: &Arc<Database>,
-    skill: &InstalledSkill,
+    skill_id: &str,
     destination: &Path,
     destination_key: &str,
     existing: Option<SkillDeployment>,
@@ -740,7 +764,7 @@ fn remove_owned(
         // Persist user intent before filesystem validation or cleanup. Drift
         // therefore reports a conflict while the toggle remains off and the
         // ledger is retained as deletion evidence.
-        db.set_pi_skill_desired(&skill.id, desired_enabled)?;
+        db.set_pi_skill_desired(skill_id, desired_enabled)?;
     }
     let Some(existing) = existing else {
         // Foreign/native discovered directories are preserved.
@@ -756,7 +780,14 @@ fn remove_owned(
         })?;
         return Err(error);
     }
-    if let Err(error) = db.delete_pi_skill_deployment(&skill.id, destination_key) {
+    let ledger_error = match db.delete_pi_skill_deployment(skill_id, destination_key) {
+        Ok(true) => None,
+        Ok(false) => Some(AppError::Conflict(format!(
+            "Pi Skill '{skill_id}' ownership receipt disappeared before native cleanup"
+        ))),
+        Err(error) => Some(error),
+    };
+    if let Some(error) = ledger_error {
         restore_staged_destination(&staged, destination).map_err(|rollback| {
             AppError::Conflict(format!(
                 "Pi Skill ledger cleanup failed ({error}); file rollback failed ({rollback})"
@@ -823,13 +854,47 @@ fn verify_deployment_identity(
                     .unwrap_or_else(|| Path::new("."))
                     .join(target)
             };
-            let canonical = resolved
-                .canonicalize()
-                .map_err(|error| AppError::io(&resolved, error))?;
-            if !deployment
+            let recorded_source = deployment
                 .source_identity
-                .starts_with(&format!("path:{};", canonical.display()))
-            {
+                .strip_prefix("path:")
+                .and_then(|identity| {
+                    identity
+                        .rsplit_once(";digest:")
+                        .map(|(path, _digest)| PathBuf::from(path))
+                })
+                .ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "owned Pi Skill has invalid source identity: {}",
+                        destination.display()
+                    ))
+                })?;
+            let observed_source = match resolved.canonicalize() {
+                Ok(canonical) => canonical,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Portable sync replaces the SSOT before reconciling its
+                    // database catalog. A removed Skill therefore leaves a
+                    // dangling but still identifiable owned symlink. Only an
+                    // exact recorded target may be removed in that state.
+                    let parent = resolved.parent().ok_or_else(|| {
+                        AppError::Conflict(format!(
+                            "owned Pi Skill symlink target has no parent: {}",
+                            destination.display()
+                        ))
+                    })?;
+                    let name = resolved.file_name().ok_or_else(|| {
+                        AppError::Conflict(format!(
+                            "owned Pi Skill symlink target has no final component: {}",
+                            destination.display()
+                        ))
+                    })?;
+                    parent
+                        .canonicalize()
+                        .map_err(|error| AppError::io(parent, error))?
+                        .join(name)
+                }
+                Err(error) => return Err(AppError::io(&resolved, error)),
+            };
+            if observed_source != recorded_source {
                 return Err(AppError::Conflict(format!(
                     "owned Pi Skill symlink target changed externally: {}",
                     destination.display()
@@ -1138,7 +1203,7 @@ mod tests {
         fs::write(destination.join("changed.txt"), "external drift").expect("drift");
         let error = remove_owned(
             &db,
-            &skill,
+            &skill.id,
             &destination,
             &key,
             db.get_pi_skill_deployment(&skill.id, &key)
@@ -1367,7 +1432,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn reconcile_all_reports_failures_after_deploying_independent_skills() {
+    fn reconcile_all_handles_independent_and_orphaned_skills() {
         struct EnvGuard {
             key: &'static str,
             previous: Option<std::ffi::OsString>,
@@ -1397,16 +1462,22 @@ mod tests {
         let pi_root = temp.path().join("pi");
         let _pi_root = EnvGuard::set("PI_CODING_AGENT_DIR", &pi_root);
         let ssot = SkillService::get_ssot_dir().expect("SSOT");
-        let good_source = ssot.join("good");
-        fs::create_dir_all(&good_source).expect("good source");
-        fs::write(
-            good_source.join("SKILL.md"),
-            "---\nname: good\ndescription: independent skill\n---\n",
-        )
-        .expect("manifest");
+        for directory in ["good", "orphan"] {
+            let source = ssot.join(directory);
+            fs::create_dir_all(&source).expect("skill source");
+            fs::write(
+                source.join("SKILL.md"),
+                format!("---\nname: {directory}\ndescription: reconciliation test\n---\n"),
+            )
+            .expect("manifest");
+        }
 
         let db = Arc::new(Database::memory().expect("database"));
-        for (id, directory) in [("local:bad", "missing"), ("local:good", "good")] {
+        for (id, directory) in [
+            ("local:bad", "missing"),
+            ("local:good", "good"),
+            ("local:orphan", "orphan"),
+        ] {
             db.save_skill(&InstalledSkill {
                 id: id.to_string(),
                 name: directory.to_string(),
@@ -1430,6 +1501,26 @@ mod tests {
         assert!(
             fs::symlink_metadata(pi_root.join("skills").join("good")).is_ok(),
             "one invalid Skill must not hide an independent valid deployment"
+        );
+
+        // Portable import can remove a catalog row and replace its SSOT while
+        // retaining this device's ownership receipt. Reconciliation consumes
+        // that receipt to remove the now-orphaned native destination safely.
+        db.delete_skill("local:orphan")
+            .expect("remove portable row");
+        remove_path(&ssot.join("orphan")).expect("replace portable SSOT");
+        PiSkillDeploymentService::reconcile_all(&db)
+            .expect_err("the unrelated missing source remains visible");
+        assert!(
+            fs::symlink_metadata(pi_root.join("skills").join("orphan")).is_err(),
+            "owned native deployment must follow a portable catalog deletion"
+        );
+        assert!(
+            db.get_all_pi_skill_deployments()
+                .expect("deployment ledger")
+                .iter()
+                .all(|deployment| deployment.skill_id != "local:orphan"),
+            "the consumed orphan receipt must not remain as shadow state"
         );
     }
 }

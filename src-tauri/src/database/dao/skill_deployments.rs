@@ -129,6 +129,24 @@ impl Database {
             .collect()
     }
 
+    pub(crate) fn get_all_pi_skill_deployments(&self) -> Result<Vec<SkillDeployment>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn
+            .prepare(
+                "SELECT skill_id, destination, destination_key, method,
+                        source_identity, deployed_digest, created_at, updated_at
+                 FROM skill_deployments
+                 WHERE app_type = 'pi'
+                 ORDER BY skill_id, created_at, destination_key",
+            )
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let rows = stmt
+            .query_map([], decode_deployment)
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        rows.map(|row| row.map_err(|error| AppError::Database(error.to_string())))
+            .collect()
+    }
+
     pub(crate) fn save_pi_skill_deployment(
         &self,
         deployment: &SkillDeployment,
