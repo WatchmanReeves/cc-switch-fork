@@ -181,6 +181,7 @@ pub struct PiPromptTemplateService;
 
 impl PiPromptTemplateService {
     pub fn list() -> Result<Vec<PiPromptTemplate>, AppError> {
+        let _guard = lock_instruction_files()?;
         Self::list_at(&get_pi_agent_dir()?.join("prompts"))
     }
 
@@ -189,6 +190,7 @@ impl PiPromptTemplateService {
         expected_revision: &str,
         content: &str,
     ) -> Result<PiPromptTemplate, AppError> {
+        let _guard = lock_instruction_files()?;
         Self::upsert_at(
             &get_pi_agent_dir()?.join("prompts"),
             slug,
@@ -199,6 +201,7 @@ impl PiPromptTemplateService {
 
     pub fn delete(slug: &str, expected_revision: &str) -> Result<bool, AppError> {
         validate_template_slug(slug)?;
+        let _guard = lock_instruction_files()?;
         delete_shared_file(
             &template_path(&get_pi_agent_dir()?.join("prompts"), slug),
             expected_revision,

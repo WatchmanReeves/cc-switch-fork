@@ -576,6 +576,25 @@ impl ProxyService {
         self.switch_locks.lock_for_app(app_type).await
     }
 
+    async fn shared_listener_is_desired(&self) -> Result<bool, String> {
+        let legacy_takeover = self
+            .db
+            .is_live_takeover_active()
+            .await
+            .map_err(|error| format!("检查接管状态失败: {error}"))?;
+        Ok(shared_listener_is_desired(
+            legacy_takeover,
+            crate::settings::pi_takeover_enabled(),
+        ))
+    }
+
+    pub(crate) fn shared_listener_is_desired_sync(&self) -> bool {
+        shared_listener_is_desired(
+            self.db.is_live_takeover_active_sync(),
+            crate::settings::pi_takeover_enabled(),
+        )
+    }
+
     pub(crate) async fn begin_pi_catalog_mutation(&self) -> u64 {
         self.pi_runtime.begin_mutation().await
     }
@@ -1808,7 +1827,7 @@ impl ProxyService {
             .await
             .map_err(|e| format!("检查接管状态失败: {e}"))?;
 
-        if !any_enabled {
+        if !shared_listener_is_desired(any_enabled, crate::settings::pi_takeover_enabled()) {
             let _ = self.db.set_live_takeover_active(false).await;
 
             if self.is_running().await {
@@ -1938,13 +1957,7 @@ impl ProxyService {
             .await
             .map_err(|error| error.to_string())?;
 
-        let status = self.get_takeover_status().await?;
-        if !status.claude
-            && !status.codex
-            && !status.gemini
-            && !status.grokbuild
-            && self.is_running().await
-        {
+        if !self.shared_listener_is_desired().await? && self.is_running().await {
             let _ = self.stop().await;
         }
         Ok(())
@@ -4371,6 +4384,10 @@ impl ProxyService {
     }
 }
 
+fn shared_listener_is_desired(legacy_takeover: bool, pi_takeover: bool) -> bool {
+    legacy_takeover || pi_takeover
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4380,6 +4397,14 @@ mod tests {
     use serial_test::serial;
     use std::env;
     use tempfile::TempDir;
+
+    #[test]
+    fn shared_listener_stays_live_until_both_takeover_domains_are_disabled() {
+        assert!(!shared_listener_is_desired(false, false));
+        assert!(shared_listener_is_desired(true, false));
+        assert!(shared_listener_is_desired(false, true));
+        assert!(shared_listener_is_desired(true, true));
+    }
 
     struct TempHome {
         #[allow(dead_code)]

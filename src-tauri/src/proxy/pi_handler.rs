@@ -172,7 +172,10 @@ pub(crate) async fn handle_pi_native(
                 // response is no longer client-visible.
                 drop(pending);
             }
-            let send = crate::proxy::http_client::get()
+            let client = crate::proxy::http_client::get_no_redirect().map_err(|error| {
+                ProxyError::ForwardFailed(format!("Pi gateway HTTP client is unavailable: {error}"))
+            })?;
+            let send = client
                 .request(method.clone(), materialized.url.clone())
                 .headers(outgoing_headers)
                 .body(body.clone())

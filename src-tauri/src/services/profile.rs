@@ -459,7 +459,7 @@ impl ProfileService {
             .set_current_profile_id(scope.as_str(), Some(profile_id))?;
 
         // 当前分组内所有接管已关闭；若其它应用也无接管，可停止代理服务。
-        let should_stop_proxy = !state.db.is_live_takeover_active_sync();
+        let should_stop_proxy = !state.proxy_service.shared_listener_is_desired_sync();
 
         Ok((warnings, should_stop_proxy))
     }

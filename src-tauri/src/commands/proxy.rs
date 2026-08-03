@@ -165,6 +165,7 @@ pub async fn update_proxy_config_for_app(
             circuit_timeout_seconds: config.circuit_timeout_seconds,
             circuit_error_rate_threshold: config.circuit_error_rate_threshold,
             circuit_min_requests: config.circuit_min_requests,
+            ..previous.clone()
         };
         let epoch = state.proxy_service.begin_pi_catalog_mutation().await;
         if let Err(error) = crate::settings::update_pi_proxy_settings(next) {
@@ -210,6 +211,9 @@ async fn get_default_cost_multiplier_internal(
     state: &AppState,
     app_type: &str,
 ) -> Result<String, AppError> {
+    if app_type == "pi" {
+        return Ok(crate::settings::get_pi_default_cost_multiplier());
+    }
     let db = &state.db;
     db.get_default_cost_multiplier(app_type).await
 }
@@ -238,6 +242,9 @@ async fn set_default_cost_multiplier_internal(
     app_type: &str,
     value: &str,
 ) -> Result<(), AppError> {
+    if app_type == "pi" {
+        return crate::settings::set_pi_default_cost_multiplier(value);
+    }
     let db = &state.db;
     db.set_default_cost_multiplier(app_type, value).await
 }
@@ -267,6 +274,9 @@ async fn get_pricing_model_source_internal(
     state: &AppState,
     app_type: &str,
 ) -> Result<String, AppError> {
+    if app_type == "pi" {
+        return Ok(crate::settings::get_pi_pricing_model_source());
+    }
     let db = &state.db;
     db.get_pricing_model_source(app_type).await
 }
@@ -295,6 +305,9 @@ async fn set_pricing_model_source_internal(
     app_type: &str,
     value: &str,
 ) -> Result<(), AppError> {
+    if app_type == "pi" {
+        return crate::settings::set_pi_pricing_model_source(value);
+    }
     let db = &state.db;
     db.set_pricing_model_source(app_type, value).await
 }
@@ -510,4 +523,62 @@ pub async fn get_circuit_breaker_stats(
     // 目前先返回 None，后续可以通过 ProxyService 暴露接口来实现
     let _ = (state, provider_id, app_type);
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::{lock_conn, Database};
+    use std::sync::Arc;
+
+    struct TestHome(Option<std::ffi::OsString>);
+
+    impl TestHome {
+        fn install(path: &std::path::Path) -> Result<Self, AppError> {
+            let previous = std::env::var_os("CC_SWITCH_TEST_HOME");
+            std::env::set_var("CC_SWITCH_TEST_HOME", path);
+            crate::settings::reload_settings()?;
+            Ok(Self(previous))
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            let _ = crate::settings::reload_settings();
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn pi_pricing_round_trips_without_out_of_schema_proxy_row() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+
+        set_default_cost_multiplier_test_hook(&state, "pi", "1.25").await?;
+        set_pricing_model_source_test_hook(&state, "pi", "request").await?;
+
+        assert_eq!(
+            get_default_cost_multiplier_test_hook(&state, "pi").await?,
+            "1.25"
+        );
+        assert_eq!(
+            get_pricing_model_source_test_hook(&state, "pi").await?,
+            "request"
+        );
+        let conn = lock_conn!(state.db.conn);
+        let pi_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proxy_config WHERE app_type = 'pi'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        assert_eq!(pi_rows, 0);
+        Ok(())
+    }
 }

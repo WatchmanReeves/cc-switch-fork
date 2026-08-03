@@ -362,14 +362,17 @@ impl<'a> UsageLogger<'a> {
         } else {
             app_type
         };
-        let default_multiplier_raw =
+        let default_multiplier_raw = if default_app_type == "pi" {
+            crate::settings::get_pi_default_cost_multiplier()
+        } else {
             match self.db.get_default_cost_multiplier(default_app_type).await {
                 Ok(value) => value,
                 Err(e) => {
                     log::warn!("[USG-003] 获取默认倍率失败 (app_type={app_type}): {e}");
                     "1".to_string()
                 }
-            };
+            }
+        };
         let default_multiplier = match Decimal::from_str(&default_multiplier_raw) {
             Ok(value) => value,
             Err(e) => {
@@ -380,14 +383,17 @@ impl<'a> UsageLogger<'a> {
             }
         };
 
-        let default_pricing_source_raw =
+        let default_pricing_source_raw = if default_app_type == "pi" {
+            crate::settings::get_pi_pricing_model_source()
+        } else {
             match self.db.get_pricing_model_source(default_app_type).await {
                 Ok(value) => value,
                 Err(e) => {
                     log::warn!("[USG-003] 获取默认计费模式失败 (app_type={app_type}): {e}");
                     PRICING_SOURCE_RESPONSE.to_string()
                 }
-            };
+            }
+        };
         let default_pricing_source = if default_pricing_source_raw == PRICING_SOURCE_RESPONSE
             || default_pricing_source_raw == PRICING_SOURCE_REQUEST
         {

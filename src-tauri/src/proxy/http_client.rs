@@ -10,8 +10,15 @@ use std::net::IpAddr;
 use std::sync::RwLock;
 use std::time::Duration;
 
-/// 全局 HTTP 客户端实例
-static GLOBAL_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
+#[derive(Clone)]
+struct GlobalClients {
+    standard: Client,
+    no_redirect: Client,
+}
+
+/// 全局 HTTP 客户端实例。Pi 网关使用同一代理配置下的 no-redirect 客户端，
+/// 防止 307/308 把凭证、自定义头和请求体重放到另一个 origin。
+static GLOBAL_CLIENTS: OnceCell<RwLock<GlobalClients>> = OnceCell::new();
 
 /// 当前代理 URL（用于日志和状态查询）
 static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
@@ -52,10 +59,10 @@ fn get_proxy_port() -> u16 {
 ///   传入 None 或空字符串表示直连
 pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
-    let client = build_client(effective_url)?;
+    let clients = build_clients(effective_url)?;
 
     // 尝试初始化全局客户端，如果已存在则记录警告并使用 apply_proxy 更新
-    if GLOBAL_CLIENT.set(RwLock::new(client.clone())).is_err() {
+    if GLOBAL_CLIENTS.set(RwLock::new(clients)).is_err() {
         log::warn!(
             "[GlobalProxy] [GP-003] Already initialized, updating instead: {}",
             effective_url
@@ -91,8 +98,8 @@ pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
 /// 验证成功返回 Ok(())，失败返回错误信息
 pub fn validate_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
-    // 只调用 build_client 来验证，但不应用
-    build_client(effective_url)?;
+    // 同时验证标准与 no-redirect 客户端，保证应用配置时不会只更新一半。
+    build_clients(effective_url)?;
     Ok(())
 }
 
@@ -105,15 +112,15 @@ pub fn validate_proxy(proxy_url: Option<&str>) -> Result<(), String> {
 /// * `proxy_url` - 代理 URL，None 或空字符串表示直连
 pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
-    let new_client = build_client(effective_url)?;
+    let new_clients = build_clients(effective_url)?;
 
     // 更新客户端
-    if let Some(lock) = GLOBAL_CLIENT.get() {
-        let mut client = lock.write().map_err(|e| {
+    if let Some(lock) = GLOBAL_CLIENTS.get() {
+        let mut clients = lock.write().map_err(|e| {
             log::error!("[GlobalProxy] [GP-001] Failed to acquire write lock: {e}");
             "Failed to update proxy: lock poisoned".to_string()
         })?;
-        *client = new_client;
+        *clients = new_clients;
     } else {
         // 如果还没初始化，则初始化
         return init(proxy_url);
@@ -148,52 +155,40 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
 /// * `proxy_url` - 新的代理 URL，None 或空字符串表示直连
 #[allow(dead_code)]
 pub fn update_proxy(proxy_url: Option<&str>) -> Result<(), String> {
-    let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
-    let new_client = build_client(effective_url)?;
-
-    // 更新客户端
-    if let Some(lock) = GLOBAL_CLIENT.get() {
-        let mut client = lock.write().map_err(|e| {
-            log::error!("[GlobalProxy] [GP-001] Failed to acquire write lock: {e}");
-            "Failed to update proxy: lock poisoned".to_string()
-        })?;
-        *client = new_client;
-    } else {
-        // 如果还没初始化，则初始化
-        return init(proxy_url);
-    }
-
-    // 更新代理 URL 记录
-    if let Some(lock) = CURRENT_PROXY_URL.get() {
-        let mut url = lock.write().map_err(|e| {
-            log::error!("[GlobalProxy] [GP-002] Failed to acquire URL write lock: {e}");
-            "Failed to update proxy URL record: lock poisoned".to_string()
-        })?;
-        *url = effective_url.map(|s| s.to_string());
-    }
-
-    log::info!(
-        "[GlobalProxy] Updated: {}",
-        effective_url
-            .map(mask_url)
-            .unwrap_or_else(|| "direct connection".to_string())
-    );
-
-    Ok(())
+    apply_proxy(proxy_url)
 }
 
 /// 获取全局 HTTP 客户端
 ///
 /// 返回配置了代理的客户端（如果已配置代理），否则返回跟随系统代理的客户端。
 pub fn get() -> Client {
-    GLOBAL_CLIENT
+    GLOBAL_CLIENTS
         .get()
         .and_then(|lock| lock.read().ok())
-        .map(|c| c.clone())
+        .map(|clients| clients.standard.clone())
         .unwrap_or_else(|| {
             log::warn!("[GlobalProxy] [GP-004] Client not initialized, using fallback");
             build_client(None).unwrap_or_default()
         })
+}
+
+/// 获取禁用自动重定向的全局客户端。
+///
+/// 与 `get` 不同，这个安全边界在锁毒化或构建失败时 fail closed；调用方不得
+/// 回退到会自动跟随跨 origin 重定向的默认客户端。
+pub(crate) fn get_no_redirect() -> Result<Client, String> {
+    if let Some(lock) = GLOBAL_CLIENTS.get() {
+        return lock
+            .read()
+            .map(|clients| clients.no_redirect.clone())
+            .map_err(|error| {
+                log::error!("[GlobalProxy] [GP-005] Failed to acquire read lock: {error}");
+                "Failed to read no-redirect HTTP client: lock poisoned".to_string()
+            });
+    }
+
+    log::warn!("[GlobalProxy] [GP-006] Client not initialized, using no-redirect fallback");
+    build_no_redirect_client(None)
 }
 
 /// 获取当前代理 URL
@@ -214,6 +209,24 @@ pub fn is_proxy_enabled() -> bool {
 
 /// 构建 HTTP 客户端
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_with_redirect_policy(proxy_url, true)
+}
+
+fn build_no_redirect_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_with_redirect_policy(proxy_url, false)
+}
+
+fn build_clients(proxy_url: Option<&str>) -> Result<GlobalClients, String> {
+    Ok(GlobalClients {
+        standard: build_client(proxy_url)?,
+        no_redirect: build_no_redirect_client(proxy_url)?,
+    })
+}
+
+fn build_client_with_redirect_policy(
+    proxy_url: Option<&str>,
+    follow_redirects: bool,
+) -> Result<Client, String> {
     let mut builder = Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
@@ -225,6 +238,9 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         .no_brotli()
         .no_deflate()
         .no_zstd();
+    if !follow_redirects {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
 
     // 有代理地址则使用代理，否则跟随系统代理
     if let Some(url) = proxy_url {
@@ -337,7 +353,9 @@ pub fn mask_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -390,6 +408,52 @@ mod tests {
         // 使用明确无效的 scheme 来触发错误
         let result = build_client(Some("invalid-scheme://127.0.0.1:7890"));
         assert!(result.is_err(), "Should reject invalid proxy scheme");
+    }
+
+    #[tokio::test]
+    async fn no_redirect_client_exposes_redirect_without_replaying_request() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind redirect server");
+        let address = listener.local_addr().expect("server address");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let server_hits = Arc::clone(&hits);
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let hit = server_hits.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0_u8; 2048];
+                let _ = stream.read(&mut request).await.expect("read request");
+                let response = if hit == 0 {
+                    format!(
+                        "HTTP/1.1 307 Temporary Redirect\r\n\
+                         Location: http://{address}/redirected\r\n\
+                         Content-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                };
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+
+        let client = build_no_redirect_client(None).expect("build no-redirect client");
+        let response = client
+            .get(format!("http://{address}/initial"))
+            .send()
+            .await
+            .expect("send request");
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "the redirected endpoint must not receive a replay"
+        );
+        server.abort();
     }
 
     #[test]

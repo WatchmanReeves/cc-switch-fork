@@ -160,35 +160,59 @@ impl PiCatalogCoordinator {
         state: &AppState,
         mutation: PiCatalogMutation,
     ) -> Result<PiCatalogMutationResult, AppError> {
+        let switch_guard = futures::executor::block_on(
+            state
+                .proxy_service
+                .lock_switch_for_app(AppType::Pi.as_str()),
+        );
+        Self::apply_under_switch_guard(state, &switch_guard, mutation)
+    }
+
+    /// Compose a Pi catalog mutation with a caller-owned switch boundary.
+    ///
+    /// Multi-step control-plane operations (for example selecting failover P1
+    /// and enabling its runtime policy) use this entry point so they do not
+    /// release the shared ownership boundary or deadlock by acquiring it twice.
+    pub(crate) fn apply_under_switch_guard(
+        state: &AppState,
+        switch_guard: &tokio::sync::OwnedMutexGuard<()>,
+        mutation: PiCatalogMutation,
+    ) -> Result<PiCatalogMutationResult, AppError> {
         let additional_native_key = match &mutation {
             PiCatalogMutation::CreateProvider { provider_key, .. }
             | PiCatalogMutation::ImportNative { provider_key, .. } => Some(provider_key.clone()),
             _ => None,
         };
-        Self::run_with_runtime_reconcile(state, additional_native_key.as_deref(), || match mutation
-        {
-            PiCatalogMutation::CreateProvider {
-                input,
-                provider_key,
-                activate_if_first,
-            } => Self::create(state, input, provider_key, activate_if_first),
-            PiCatalogMutation::UpdateProvider { input } => Self::update(state, input),
-            PiCatalogMutation::DeleteProvider { provider_id } => Self::delete(state, &provider_id),
-            PiCatalogMutation::AddEndpoint { provider_id, url } => {
-                Self::add_endpoint(state, &provider_id, &url)
-            }
-            PiCatalogMutation::RemoveEndpoint { provider_id, url } => {
-                Self::remove_endpoint(state, &provider_id, &url)
-            }
-            PiCatalogMutation::ImportNative {
-                provider_key,
-                expected_fingerprint,
-            } => Self::import_native(state, &provider_key, &expected_fingerprint),
-            PiCatalogMutation::SetDefault {
-                provider_id,
-                model_id,
-            } => Self::set_default(state, &provider_id, &model_id),
-        })
+        Self::run_with_runtime_reconcile_locked(
+            state,
+            switch_guard,
+            additional_native_key.as_deref(),
+            || match mutation {
+                PiCatalogMutation::CreateProvider {
+                    input,
+                    provider_key,
+                    activate_if_first,
+                } => Self::create(state, input, provider_key, activate_if_first),
+                PiCatalogMutation::UpdateProvider { input } => Self::update(state, input),
+                PiCatalogMutation::DeleteProvider { provider_id } => {
+                    Self::delete(state, &provider_id)
+                }
+                PiCatalogMutation::AddEndpoint { provider_id, url } => {
+                    Self::add_endpoint(state, &provider_id, &url)
+                }
+                PiCatalogMutation::RemoveEndpoint { provider_id, url } => {
+                    Self::remove_endpoint(state, &provider_id, &url)
+                }
+                PiCatalogMutation::ImportNative {
+                    provider_key,
+                    expected_fingerprint,
+                } => Self::import_native(state, &provider_key, &expected_fingerprint),
+                PiCatalogMutation::SetDefault {
+                    provider_id,
+                    model_id,
+                } => Self::set_default(state, &provider_id, &model_id),
+            },
+        )
     }
 
     /// Reconcile portable provider rows with this device's exact-key ledger.
@@ -224,11 +248,25 @@ impl PiCatalogCoordinator {
         additional_native_key: Option<&str>,
         operation: impl FnOnce() -> Result<PiCatalogMutationResult, AppError>,
     ) -> Result<PiCatalogMutationResult, AppError> {
-        let _switch_guard = futures::executor::block_on(
+        let switch_guard = futures::executor::block_on(
             state
                 .proxy_service
                 .lock_switch_for_app(AppType::Pi.as_str()),
         );
+        Self::run_with_runtime_reconcile_locked(
+            state,
+            &switch_guard,
+            additional_native_key,
+            operation,
+        )
+    }
+
+    fn run_with_runtime_reconcile_locked(
+        state: &AppState,
+        _switch_guard: &tokio::sync::OwnedMutexGuard<()>,
+        additional_native_key: Option<&str>,
+        operation: impl FnOnce() -> Result<PiCatalogMutationResult, AppError>,
+    ) -> Result<PiCatalogMutationResult, AppError> {
         Self::reconcile_current_indexes_from_native(state)?;
         let snapshot = PiCatalogSnapshot::capture(state, additional_native_key)?;
         let catalog_epoch =

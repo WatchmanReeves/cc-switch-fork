@@ -426,6 +426,8 @@ export interface Settings {
   piTakeoverEnabled?: boolean;
   piProxy?: {
     autoFailoverEnabled: boolean;
+    defaultCostMultiplier: string;
+    pricingModelSource: "request" | "response";
     maxRetries: number;
     streamingFirstByteTimeout: number;
     streamingIdleTimeout: number;

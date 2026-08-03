@@ -24,6 +24,10 @@ pub struct CustomEndpoint {
 pub struct PiProxySettings {
     #[serde(default)]
     pub auto_failover_enabled: bool,
+    #[serde(default = "default_pi_cost_multiplier")]
+    pub default_cost_multiplier: String,
+    #[serde(default = "default_pi_pricing_model_source")]
+    pub pricing_model_source: String,
     #[serde(default = "default_pi_max_retries")]
     pub max_retries: u32,
     #[serde(default = "default_pi_first_byte_timeout")]
@@ -44,6 +48,12 @@ pub struct PiProxySettings {
     pub circuit_min_requests: u32,
 }
 
+fn default_pi_cost_multiplier() -> String {
+    "1".to_string()
+}
+fn default_pi_pricing_model_source() -> String {
+    crate::database::PRICING_SOURCE_RESPONSE.to_string()
+}
 const fn default_pi_max_retries() -> u32 {
     3
 }
@@ -76,6 +86,8 @@ impl Default for PiProxySettings {
     fn default() -> Self {
         Self {
             auto_failover_enabled: false,
+            default_cost_multiplier: default_pi_cost_multiplier(),
+            pricing_model_source: default_pi_pricing_model_source(),
             max_retries: default_pi_max_retries(),
             streaming_first_byte_timeout: default_pi_first_byte_timeout(),
             streaming_idle_timeout: default_pi_idle_timeout(),
@@ -91,6 +103,8 @@ impl Default for PiProxySettings {
 
 impl PiProxySettings {
     pub(crate) fn validate(&self) -> Result<(), AppError> {
+        crate::database::validate_cost_multiplier(&self.default_cost_multiplier)?;
+        crate::database::validate_pricing_source(&self.pricing_model_source)?;
         if !self.circuit_error_rate_threshold.is_finite()
             || !(0.0..=1.0).contains(&self.circuit_error_rate_threshold)
         {
@@ -1150,6 +1164,25 @@ pub(crate) fn get_pi_proxy_settings() -> PiProxySettings {
 pub(crate) fn update_pi_proxy_settings(settings: PiProxySettings) -> Result<(), AppError> {
     settings.validate()?;
     mutate_settings(|current| current.pi_proxy = settings)
+}
+
+pub(crate) fn get_pi_default_cost_multiplier() -> String {
+    get_pi_proxy_settings().default_cost_multiplier
+}
+
+pub(crate) fn set_pi_default_cost_multiplier(value: &str) -> Result<(), AppError> {
+    crate::database::validate_cost_multiplier(value)?;
+    let value = value.trim().to_string();
+    mutate_settings(move |settings| settings.pi_proxy.default_cost_multiplier = value)
+}
+
+pub(crate) fn get_pi_pricing_model_source() -> String {
+    get_pi_proxy_settings().pricing_model_source
+}
+
+pub(crate) fn set_pi_pricing_model_source(value: &str) -> Result<(), AppError> {
+    let value = crate::database::validate_pricing_source(value)?.to_string();
+    mutate_settings(move |settings| settings.pi_proxy.pricing_model_source = value)
 }
 
 pub(crate) fn get_pi_app_proxy_config() -> crate::proxy::types::AppProxyConfig {
