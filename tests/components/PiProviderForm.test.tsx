@@ -80,6 +80,31 @@ describe("PiProviderForm", () => {
     expect(JSON.parse(onSubmit.mock.calls[0][0].settingsConfig)).toEqual(input);
   });
 
+  it("preserves pinned exact model IDs instead of trimming them", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const input = {
+      name: "Exact IDs",
+      api: "openai-responses",
+      baseUrl: "https://api.example.com/v1",
+      models: [{ id: " " }, { id: " model " }],
+    };
+
+    render(
+      <PiProviderForm
+        appId="pi"
+        providerId="exact-ids"
+        submitLabel="Save exact IDs"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        initialData={{ name: input.name, settingsConfig: input }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save exact IDs" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(onSubmit.mock.calls[0][0].settingsConfig)).toEqual(input);
+  });
+
   it("preserves an explicitly false authHeader instead of erasing it", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const input = {

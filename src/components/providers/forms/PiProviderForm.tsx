@@ -220,10 +220,13 @@ export function PiProviderForm({
       );
       const seen = new Set<string>();
       const normalizedModels = models.map((model, index) => {
-        const id = model.id.trim();
+        // Pinned Pi treats model IDs as opaque, exact strings. In particular,
+        // its schema accepts whitespace-only and edge-whitespace IDs; trimming
+        // here would silently rename an imported model.
+        const id = model.id;
         const modelApi = model.api.trim();
         const modelBaseUrl = model.baseUrl.trim();
-        if (!id) {
+        if (id.length === 0) {
           throw new Error(t("pi.form.modelIdRequired", { index: index + 1 }));
         }
         if (seen.has(id)) {

@@ -100,7 +100,9 @@ pub(crate) fn set_pi_native_default_with_receipt(
     provider_key: &str,
     model_id: &str,
 ) -> Result<PiNativeDefaultsReceipt, AppError> {
-    if provider_key.trim().is_empty() || model_id.trim().is_empty() {
+    // Native model identifiers are opaque exact strings under pinned Pi's
+    // schema. Do not trim a schema-valid whitespace or edge-whitespace ID.
+    if provider_key.trim().is_empty() || model_id.is_empty() {
         return Err(AppError::InvalidInput(
             "Pi default provider and model must be non-empty".to_string(),
         ));
@@ -200,6 +202,31 @@ fn read_settings_document(path: &Path) -> Result<Value, AppError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[serial_test::serial]
+    fn native_default_preserves_a_pinned_exact_whitespace_model_id() {
+        struct EnvGuard(Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvGuard(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        set_pi_native_default_with_receipt("provider", " ")
+            .expect("pinned exact model id is accepted");
+        let defaults = read_pi_native_defaults().expect("native defaults");
+        assert_eq!(defaults.default_provider.as_deref(), Some("provider"));
+        assert_eq!(defaults.default_model.as_deref(), Some(" "));
+        assert!(set_pi_native_default_with_receipt("provider", "").is_err());
+    }
 
     #[test]
     fn default_patch_preserves_every_unowned_field() {
