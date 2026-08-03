@@ -369,7 +369,7 @@ export function ProviderList({
       <ProviderEmptyState
         appId={appId}
         onCreate={onCreate}
-        onImport={() => importMutation.mutate()}
+        onImport={appId === "pi" ? undefined : () => importMutation.mutate()}
       />
     );
   }

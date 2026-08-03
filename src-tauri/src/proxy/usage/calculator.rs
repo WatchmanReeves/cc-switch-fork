@@ -3,6 +3,7 @@
 //! 使用高精度 Decimal 类型避免浮点数精度问题
 
 use super::parser::TokenUsage;
+use super::semantics::InputTokenSemantics;
 use rust_decimal::Decimal;
 use std::str::FromStr;
 
@@ -46,13 +47,17 @@ impl CostCalculator {
         pricing: &ModelPricing,
         cost_multiplier: Decimal,
     ) -> CostBreakdown {
-        Self::calculate_with_cache_semantics(usage, pricing, cost_multiplier, false)
+        Self::calculate_with_input_semantics(
+            InputTokenSemantics::FreshExcludesCache,
+            usage,
+            pricing,
+            cost_multiplier,
+        )
     }
 
-    /// 按 app_type 选择输入 token 语义后计算成本。
-    ///
-    /// Codex/OpenAI Responses 与 Gemini 的输入 token 字段包含 cache read 部分；
-    /// Claude/Anthropic 的 input_tokens 已经是 fresh input。
+    /// Compatibility helper for existing callers. Live request paths use
+    /// [`Self::calculate_with_input_semantics`] so product app ownership never
+    /// stands in for the actual response parser/wire family.
     pub fn calculate_for_app(
         app_type: &str,
         usage: &TokenUsage,
@@ -61,32 +66,37 @@ impl CostCalculator {
     ) -> CostBreakdown {
         let input_includes_cache_read =
             crate::services::sql_helpers::is_cache_inclusive_app(app_type);
-        Self::calculate_with_cache_semantics(
+        Self::calculate_with_input_semantics(
+            if input_includes_cache_read {
+                InputTokenSemantics::TotalIncludesCacheBuckets
+            } else {
+                InputTokenSemantics::FreshExcludesCache
+            },
             usage,
             pricing,
             cost_multiplier,
-            input_includes_cache_read,
         )
     }
 
-    fn calculate_with_cache_semantics(
+    pub fn calculate_with_input_semantics(
+        input_semantics: InputTokenSemantics,
         usage: &TokenUsage,
         pricing: &ModelPricing,
         cost_multiplier: Decimal,
-        input_includes_cache_read: bool,
     ) -> CostBreakdown {
         let million = Decimal::from(1_000_000);
 
         // OpenAI/Gemini 风格的 input_tokens 包含缓存读取和写入，需要扣除后再按输入价计费；
         // Claude/Anthropic 风格的 input_tokens 已经是 fresh input，不能再次扣减。
-        let billable_input_tokens = if input_includes_cache_read {
-            usage
-                .input_tokens
-                .saturating_sub(usage.cache_read_tokens)
-                .saturating_sub(usage.cache_creation_tokens)
-        } else {
-            usage.input_tokens
-        };
+        let billable_input_tokens =
+            if input_semantics == InputTokenSemantics::TotalIncludesCacheBuckets {
+                usage
+                    .input_tokens
+                    .saturating_sub(usage.cache_read_tokens)
+                    .saturating_sub(usage.cache_creation_tokens)
+            } else {
+                usage.input_tokens
+            };
 
         // 各项基础成本（不含倍率）
         let input_cost =
@@ -112,13 +122,15 @@ impl CostCalculator {
         }
     }
 
-    pub fn try_calculate_for_app(
-        app_type: &str,
+    pub fn try_calculate_with_input_semantics(
+        input_semantics: InputTokenSemantics,
         usage: &TokenUsage,
         pricing: Option<&ModelPricing>,
         cost_multiplier: Decimal,
     ) -> Option<CostBreakdown> {
-        pricing.map(|p| Self::calculate_for_app(app_type, usage, p, cost_multiplier))
+        pricing.map(|pricing| {
+            Self::calculate_with_input_semantics(input_semantics, usage, pricing, cost_multiplier)
+        })
     }
 }
 

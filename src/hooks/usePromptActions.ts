@@ -1,7 +1,12 @@
 import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { promptsApi, type Prompt, type AppId } from "@/lib/api";
+import {
+  promptsApi,
+  type Prompt,
+  type AppId,
+  type PiPromptLibraryStatus,
+} from "@/lib/api";
 
 export function usePromptActions(appId: AppId) {
   const { t } = useTranslation();
@@ -10,12 +15,19 @@ export function usePromptActions(appId: AppId) {
   const [currentFileContent, setCurrentFileContent] = useState<string | null>(
     null,
   );
+  const [piLibraryStatus, setPiLibraryStatus] =
+    useState<PiPromptLibraryStatus | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
     try {
       const data = await promptsApi.getPrompts(appId);
       setPrompts(data);
+      if (appId === "pi") {
+        setPiLibraryStatus(await promptsApi.getPiPromptLibraryStatus());
+      } else {
+        setPiLibraryStatus(null);
+      }
 
       // 同时加载当前文件内容
       try {
@@ -138,15 +150,28 @@ export function usePromptActions(appId: AppId) {
     }
   }, [appId, reload, t]);
 
+  const reconcilePiLibrary = useCallback(async () => {
+    try {
+      await promptsApi.reconcilePiPromptLibrary();
+      await reload();
+      toast.success(t("pi.prompts.libraryReconciled"), { closeButton: true });
+    } catch (error) {
+      toast.error(t("pi.prompts.libraryReconcileFailed"));
+      throw error;
+    }
+  }, [reload, t]);
+
   return {
     prompts,
     loading,
     currentFileContent,
+    piLibraryStatus,
     reload,
     savePrompt,
     deletePrompt,
     enablePrompt,
     toggleEnabled,
     importFromFile,
+    reconcilePiLibrary,
   };
 }

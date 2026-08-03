@@ -1,4 +1,10 @@
 export type { AppId } from "./types";
+export { piApi } from "./pi";
+export type {
+  PiNativeDiagnostic,
+  PiNativeDefaults,
+  PiManagementStatus,
+} from "./pi";
 export { providersApi, universalProvidersApi } from "./providers";
 export { settingsApi } from "./settings";
 export { backupsApi } from "./settings";
@@ -17,7 +23,7 @@ export * as configApi from "./config";
 export * as authApi from "./auth";
 export * as copilotApi from "./copilot";
 export type { ProviderSwitchEvent } from "./providers";
-export type { Prompt } from "./prompts";
+export type { PiPromptLibraryStatus, Prompt } from "./prompts";
 export type { Profile, ProfilePayload, ProfilesResponse } from "./profiles";
 export type {
   CopilotDeviceCodeResponse,

@@ -205,7 +205,11 @@ impl ProviderType {
                 ProviderType::Gemini
             }
             AppType::GrokBuild => ProviderType::Codex,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => ProviderType::Codex,
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+                // Generic callers cannot infer Pi's wire family from AppType;
+                // the dedicated Pi runtime routes by effective model API.
+                ProviderType::Codex
+            }
         }
     }
 
@@ -259,7 +263,11 @@ pub fn get_adapter(app_type: &AppType) -> Box<dyn ProviderAdapter> {
         AppType::Codex => Box::new(CodexAdapter::new()),
         AppType::Gemini => Box::new(GeminiAdapter::new()),
         AppType::GrokBuild => Box::new(CodexAdapter::new()),
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Box::new(CodexAdapter::new()),
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+            // Pi requests use the dedicated per-model adapter path. Keep the
+            // generic fallback deterministic for non-routing utilities.
+            Box::new(CodexAdapter::new())
+        }
     }
 }
 

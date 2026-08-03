@@ -11,6 +11,32 @@ export interface Prompt {
   updatedAt?: number;
 }
 
+export type PiPromptFileKind =
+  | "global_context"
+  | "system_override"
+  | "system_append";
+
+export interface PiPromptFileSnapshot {
+  kind: PiPromptFileKind;
+  path: string;
+  exists: boolean;
+  revision: string;
+  content: string;
+}
+
+export interface PiPromptTemplate {
+  slug: string;
+  content: string;
+  revision: string;
+}
+
+export interface PiPromptLibraryStatus {
+  nativeExists: boolean;
+  nativeRevision: string;
+  matchedPromptId: string | null;
+  needsReconciliation: boolean;
+}
+
 export const promptsApi = {
   async getPrompts(app: AppId): Promise<Record<string, Prompt>> {
     return await invoke("get_prompts", { app });
@@ -34,5 +60,62 @@ export const promptsApi = {
 
   async getCurrentFileContent(app: AppId): Promise<string | null> {
     return await invoke("get_current_prompt_file_content", { app });
+  },
+
+  async getPiPromptLibraryStatus(): Promise<PiPromptLibraryStatus> {
+    return await invoke("get_pi_prompt_library_status");
+  },
+
+  async reconcilePiPromptLibrary(): Promise<void> {
+    return await invoke("reconcile_pi_prompt_library");
+  },
+
+  async getPiPromptFile(kind: PiPromptFileKind): Promise<PiPromptFileSnapshot> {
+    return await invoke("get_pi_prompt_file", { kind });
+  },
+
+  async replacePiPromptFile(
+    kind: PiPromptFileKind,
+    expectedRevision: string,
+    content: string,
+  ): Promise<PiPromptFileSnapshot> {
+    return await invoke("replace_pi_prompt_file", {
+      kind,
+      expectedRevision,
+      content,
+    });
+  },
+
+  async deletePiPromptFile(
+    kind: PiPromptFileKind,
+    expectedRevision: string,
+  ): Promise<boolean> {
+    return await invoke("delete_pi_prompt_file", { kind, expectedRevision });
+  },
+
+  async listPiPromptTemplates(): Promise<PiPromptTemplate[]> {
+    return await invoke("list_pi_prompt_templates");
+  },
+
+  async upsertPiPromptTemplate(
+    slug: string,
+    expectedRevision: string,
+    content: string,
+  ): Promise<PiPromptTemplate> {
+    return await invoke("upsert_pi_prompt_template", {
+      slug,
+      expectedRevision,
+      content,
+    });
+  },
+
+  async deletePiPromptTemplate(
+    slug: string,
+    expectedRevision: string,
+  ): Promise<boolean> {
+    return await invoke("delete_pi_prompt_template", {
+      slug,
+      expectedRevision,
+    });
   },
 };

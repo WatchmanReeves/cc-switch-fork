@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "codeAuthority": "src-tauri/src/architecture_tests.rs",
+  "edges": [
+    "composer->raw_schema",
+    "gateway->composer",
+    "native->composer",
+    "native->document",
+    "native->gateway",
+    "native->model",
+    "native->raw_schema"
+  ]
+}

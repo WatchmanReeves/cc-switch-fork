@@ -6,6 +6,24 @@ use indexmap::IndexMap;
 use rusqlite::{params, OptionalExtension, Row};
 use std::collections::{HashMap, HashSet};
 
+pub(super) fn delete_provider_on_tx(
+    tx: &rusqlite::Transaction<'_>,
+    app_type: &str,
+    id: &str,
+) -> Result<(), AppError> {
+    if tx
+        .execute(
+            "DELETE FROM providers WHERE id = ?1 AND app_type = ?2",
+            params![id, app_type],
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?
+        != 1
+    {
+        return Err(AppError::NotFound(format!("provider '{app_type}/{id}'")));
+    }
+    Ok(())
+}
+
 pub(super) struct StoredProviderRow {
     id: String,
     name: String,
@@ -292,6 +310,16 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_current_provider_for_app(&self, app_type: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE providers SET is_current = 0 WHERE app_type = ?1",
+            params![app_type],
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
         Ok(())
     }
 

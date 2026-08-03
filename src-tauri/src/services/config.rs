@@ -138,6 +138,10 @@ impl ConfigService {
             AppType::Hermes => {
                 // Hermes uses additive mode, no live sync needed
             }
+            AppType::Pi => {
+                // Pi's shared models/settings documents are owned by the
+                // catalog coordinator, never by this legacy live-sync path.
+            }
         }
 
         Ok(())

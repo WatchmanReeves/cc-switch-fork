@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "piCommit": "ab366ebe94cacd419d986be454f12b1b9913aaca",
+  "engine": "pinned upstream TypeScript",
+  "bundler": "esbuild@0.28.1",
+  "upstreamEntry": "packages/coding-agent/src/core/resolve-config-value.ts",
+  "platform": "linux",
+  "cases": [
+    {
+      "id": "literal-value",
+      "input": "literal-secret",
+      "environment": {},
+      "execution": {
+        "status": "success",
+        "entryFunction": "resolveConfigValueOrThrow"
+      },
+      "expected": "literal-secret"
+    },
+    {
+      "id": "environment-template",
+      "input": "prefix-${PI_ORACLE_VALUE}-suffix",
+      "environment": {
+        "PI_ORACLE_VALUE": "environment-secret"
+      },
+      "execution": {
+        "status": "success",
+        "entryFunction": "resolveConfigValueOrThrow"
+      },
+      "expected": "prefix-environment-secret-suffix"
+    },
+    {
+      "id": "escaped-dollar-and-bang",
+      "input": "$$literal-$!bang",
+      "environment": {},
+      "execution": {
+        "status": "success",
+        "entryFunction": "resolveConfigValueOrThrow"
+      },
+      "expected": "$literal-!bang"
+    },
+    {
+      "id": "shell-command",
+      "input": "!printf pi-command-value",
+      "environment": {},
+      "execution": {
+        "status": "success",
+        "entryFunction": "resolveConfigValueOrThrow"
+      },
+      "expected": "pi-command-value"
+    },
+    {
+      "id": "missing-environment",
+      "input": "${PI_ORACLE_MISSING}",
+      "environment": {},
+      "execution": {
+        "status": "error",
+        "entryFunction": "resolveConfigValueOrThrow"
+      },
+      "expectedError": "Failed to resolve oracle missing-environment from environment variable: PI_ORACLE_MISSING"
+    }
+  ],
+  "headerCase": {
+    "id": "provider-header-materialization",
+    "input": {
+      "x-literal": "literal-header",
+      "x-environment": "${PI_ORACLE_HEADER}",
+      "x-command": "!printf pi-command-header"
+    },
+    "environment": {
+      "PI_ORACLE_HEADER": "environment-header"
+    },
+    "execution": {
+      "status": "success",
+      "entryFunction": "resolveHeadersOrThrow"
+    },
+    "expected": {
+      "x-literal": "literal-header",
+      "x-environment": "environment-header",
+      "x-command": "pi-command-header"
+    }
+  }
+}

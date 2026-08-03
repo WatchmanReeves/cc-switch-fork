@@ -92,6 +92,8 @@ const createSettingsFormMock = (overrides: Record<string, unknown> = {}) => ({
     geminiConfigDir: "/gemini",
     opencodeConfigDir: "/opencode",
     openclawConfigDir: "/openclaw",
+    hermesConfigDir: "/hermes",
+    piConfigDir: "/pi",
     language: "zh",
   },
   isLoading: false,
@@ -113,6 +115,8 @@ const createDirectorySettingsMock = (
     gemini: "/default/gemini",
     opencode: "/default/opencode",
     openclaw: "/default/openclaw",
+    hermes: "/default/hermes",
+    pi: "/default/pi",
   },
   isLoading: false,
   initialAppConfigDir: undefined,
@@ -161,6 +165,8 @@ describe("useSettings hook", () => {
       geminiConfigDir: "/server/gemini",
       opencodeConfigDir: "/server/opencode",
       openclawConfigDir: "/server/openclaw",
+      hermesConfigDir: "/server/hermes",
+      piConfigDir: "/server/pi",
       language: "zh",
     };
 
@@ -348,6 +354,25 @@ describe("useSettings hook", () => {
     expect(syncCurrentProvidersLiveMock).not.toHaveBeenCalled();
   });
 
+  it("sanitizes and republishes when the Pi native directory changes", async () => {
+    settingsFormMock = createSettingsFormMock({
+      settings: {
+        ...serverSettings,
+        piConfigDir: "  /custom/pi  ",
+      },
+    });
+
+    const { result } = renderHook(() => useSettings());
+
+    await act(async () => {
+      await result.current.saveSettings(undefined, { silent: true });
+    });
+
+    const payload = mutateAsyncMock.mock.calls[0][0] as Settings;
+    expect(payload.piConfigDir).toBe("/custom/pi");
+    expect(syncCurrentProvidersLiveMock).toHaveBeenCalledTimes(1);
+  });
+
   it("shows toast when Claude plugin sync fails but continues flow", async () => {
     // 设置服务器状态为 false,本地状态为 true,触发状态变化
     serverSettings = {
@@ -459,9 +484,11 @@ describe("useSettings hook", () => {
       claude: "/server/claude",
       codex: undefined,
       gemini: "/server/gemini",
+      grokbuild: undefined,
       opencode: "/server/opencode",
       openclaw: "/server/openclaw",
-      hermes: undefined,
+      hermes: "/server/hermes",
+      pi: "/server/pi",
     });
     expect(metadataMock.setRequiresRestart).toHaveBeenCalledWith(false);
   });

@@ -2,6 +2,7 @@
 //!
 //! 管理代理模式下的故障转移队列（基于 providers 表的 in_failover_queue 字段）
 
+use crate::app_config::AppType;
 use crate::database::FailoverQueueItem;
 use crate::provider::Provider;
 use crate::store::AppState;
@@ -39,6 +40,50 @@ pub async fn add_to_failover_queue(
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
+    if app_type == "pi" {
+        let _guard = state
+            .proxy_service
+            .lock_switch_for_app(AppType::Pi.as_str())
+            .await;
+        if state
+            .db
+            .get_provider_aggregate("pi", &provider_id)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Err(format!("Pi provider does not exist: {provider_id}"));
+        }
+        let was_member = state
+            .db
+            .is_in_failover_queue("pi", &provider_id)
+            .map_err(|error| error.to_string())?;
+        let epoch = state.proxy_service.begin_pi_catalog_mutation().await;
+        if let Err(error) = state.db.add_to_failover_queue("pi", &provider_id) {
+            let _ = state
+                .proxy_service
+                .reconcile_pi_runtime_at_epoch(epoch)
+                .await;
+            return Err(error.to_string());
+        }
+        if let Err(error) = state
+            .proxy_service
+            .reconcile_pi_runtime_at_epoch(epoch)
+            .await
+        {
+            if !was_member {
+                let _ = state.db.remove_from_failover_queue("pi", &provider_id);
+            }
+            let rollback_epoch = state.proxy_service.begin_pi_catalog_mutation().await;
+            let _ = state
+                .proxy_service
+                .reconcile_pi_runtime_at_epoch(rollback_epoch)
+                .await;
+            return Err(format!(
+                "Pi failover queue changed but runtime publication failed: {error}"
+            ));
+        }
+        return Ok(());
+    }
     state
         .db
         .add_to_failover_queue(&app_type, &provider_id)
@@ -52,6 +97,42 @@ pub async fn remove_from_failover_queue(
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
+    if app_type == "pi" {
+        let _guard = state
+            .proxy_service
+            .lock_switch_for_app(AppType::Pi.as_str())
+            .await;
+        let was_member = state
+            .db
+            .is_in_failover_queue("pi", &provider_id)
+            .map_err(|error| error.to_string())?;
+        let epoch = state.proxy_service.begin_pi_catalog_mutation().await;
+        if let Err(error) = state.db.remove_from_failover_queue("pi", &provider_id) {
+            let _ = state
+                .proxy_service
+                .reconcile_pi_runtime_at_epoch(epoch)
+                .await;
+            return Err(error.to_string());
+        }
+        if let Err(error) = state
+            .proxy_service
+            .reconcile_pi_runtime_at_epoch(epoch)
+            .await
+        {
+            if was_member {
+                let _ = state.db.add_to_failover_queue("pi", &provider_id);
+            }
+            let rollback_epoch = state.proxy_service.begin_pi_catalog_mutation().await;
+            let _ = state
+                .proxy_service
+                .reconcile_pi_runtime_at_epoch(rollback_epoch)
+                .await;
+            return Err(format!(
+                "Pi failover queue changed but runtime publication failed: {error}"
+            ));
+        }
+        return Ok(());
+    }
     state
         .db
         .remove_from_failover_queue(&app_type, &provider_id)
@@ -64,6 +145,9 @@ pub async fn get_auto_failover_enabled(
     state: tauri::State<'_, AppState>,
     app_type: String,
 ) -> Result<bool, String> {
+    if app_type == "pi" {
+        return Ok(crate::settings::get_pi_proxy_settings().auto_failover_enabled);
+    }
     state
         .db
         .get_proxy_config_for_app(&app_type)
@@ -85,6 +169,10 @@ pub async fn set_auto_failover_enabled(
     log::info!(
         "[Failover] Setting auto_failover_enabled: app_type='{app_type}', enabled={enabled}"
     );
+
+    if app_type == "pi" {
+        return set_pi_auto_failover_enabled(&app, state.inner(), enabled).await;
+    }
 
     // 读取当前配置
     let mut config = state
@@ -178,5 +266,90 @@ pub async fn set_auto_failover_enabled(
         }
     }
 
+    Ok(())
+}
+
+async fn set_pi_auto_failover_enabled(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    enabled: bool,
+) -> Result<(), String> {
+    let _guard = state
+        .proxy_service
+        .lock_switch_for_app(AppType::Pi.as_str())
+        .await;
+    let previous_config = crate::settings::get_pi_proxy_settings();
+    if enabled && !crate::settings::pi_takeover_enabled() {
+        return Err("Pi gateway takeover must be enabled before failover".to_string());
+    }
+
+    let mut auto_added = None;
+    if enabled
+        && state
+            .db
+            .get_failover_queue("pi")
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    {
+        let current =
+            crate::services::pi_catalog::PiCatalogCoordinator::current_native_provider(state)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    "Pi failover queue is empty and no current provider is selected".to_string()
+                })?;
+        state
+            .db
+            .add_to_failover_queue("pi", &current)
+            .map_err(|error| error.to_string())?;
+        auto_added = Some(current);
+    }
+
+    let mut next = previous_config.clone();
+    next.auto_failover_enabled = enabled;
+    let epoch = state.proxy_service.begin_pi_catalog_mutation().await;
+    if let Err(error) = crate::settings::update_pi_proxy_settings(next) {
+        if let Some(provider_id) = auto_added {
+            let _ = state.db.remove_from_failover_queue("pi", &provider_id);
+        }
+        let _ = state
+            .proxy_service
+            .reconcile_pi_runtime_at_epoch(epoch)
+            .await;
+        return Err(error.to_string());
+    }
+    if let Err(error) = state
+        .proxy_service
+        .reconcile_pi_runtime_at_epoch(epoch)
+        .await
+    {
+        let _ = crate::settings::update_pi_proxy_settings(previous_config);
+        if let Some(provider_id) = auto_added {
+            let _ = state.db.remove_from_failover_queue("pi", &provider_id);
+        }
+        let rollback_epoch = state.proxy_service.begin_pi_catalog_mutation().await;
+        let _ = state
+            .proxy_service
+            .reconcile_pi_runtime_at_epoch(rollback_epoch)
+            .await;
+        return Err(format!(
+            "Pi failover preference changed but runtime publication failed: {error}"
+        ));
+    }
+
+    let _ = app.emit(
+        "provider-switched",
+        serde_json::json!({
+            "appType": "pi",
+            "providerId":
+                crate::services::pi_catalog::PiCatalogCoordinator::current_native_provider(state)
+                    .map_err(|error| error.to_string())?,
+            "source": "failoverPreferenceChanged"
+        }),
+    );
+    if let Ok(new_menu) = crate::tray::create_tray_menu(app, state) {
+        if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
+            let _ = tray.set_menu(Some(new_menu));
+        }
+    }
     Ok(())
 }

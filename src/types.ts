@@ -284,6 +284,7 @@ export interface VisibleApps {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  pi: boolean;
 }
 
 // WebDAV 同步状态
@@ -403,6 +404,8 @@ export interface Settings {
   openclawConfigDir?: string;
   // 覆盖 Hermes 配置目录（可选）
   hermesConfigDir?: string;
+  // 覆盖 Pi agent 配置目录（可选）
+  piConfigDir?: string;
 
   // ===== 当前供应商 ID（设备级）=====
   // 当前 Claude 供应商 ID（优先于数据库 is_current）
@@ -413,6 +416,26 @@ export interface Settings {
   currentProviderCodex?: string;
   // 当前 Gemini 供应商 ID（优先于数据库 is_current）
   currentProviderGemini?: string;
+  currentProviderGrokbuild?: string;
+  currentProviderOpencode?: string;
+  currentProviderOpenclaw?: string;
+  currentProviderHermes?: string;
+  currentProviderPi?: string;
+
+  // Pi gateway projection is device-local and is reconciled on startup.
+  piTakeoverEnabled?: boolean;
+  piProxy?: {
+    autoFailoverEnabled: boolean;
+    maxRetries: number;
+    streamingFirstByteTimeout: number;
+    streamingIdleTimeout: number;
+    nonStreamingTimeout: number;
+    circuitFailureThreshold: number;
+    circuitSuccessThreshold: number;
+    circuitTimeoutSeconds: number;
+    circuitErrorRateThreshold: number;
+    circuitMinRequests: number;
+  };
 
   // ===== Skill 同步设置 =====
   // Skill 同步方式：auto（默认，优先 symlink）、symlink、copy

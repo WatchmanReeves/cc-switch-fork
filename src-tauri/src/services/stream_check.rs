@@ -181,6 +181,7 @@ impl StreamCheckService {
             }
             AppType::OpenClaw => Self::extract_openclaw_base_url(provider),
             AppType::Hermes => Self::extract_hermes_base_url(provider),
+            AppType::Pi => Self::extract_pi_base_url(provider),
             AppType::ClaudeDesktop => ClaudeAdapter::new()
                 .extract_base_url(provider)
                 .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}"))),
@@ -320,6 +321,31 @@ impl StreamCheckService {
                     "Hermes 供应商缺少 base_url",
                     "Hermes provider is missing `base_url`",
                 )
+            })
+    }
+
+    /// Pi endpoint inheritance is owned by the pinned composer. Reachability
+    /// checks deliberately consume its first effective model instead of
+    /// reimplementing provider/model fallback rules.
+    fn extract_pi_base_url(provider: &Provider) -> Result<String, AppError> {
+        let config: crate::pi_config::model::PiManagedProviderConfig =
+            serde_json::from_value(provider.settings_config.clone()).map_err(|error| {
+                AppError::InvalidInput(format!(
+                    "Pi provider '{}' is not a managed native configuration: {error}",
+                    provider.id
+                ))
+            })?;
+        let composition =
+            crate::pi_config::native::compose_managed_pi_provider(&provider.id, &config)?;
+        composition
+            .models
+            .first()
+            .map(|model| model.base_url.clone())
+            .ok_or_else(|| {
+                AppError::InvalidInput(format!(
+                    "Pi provider '{}' has no effective models",
+                    provider.id
+                ))
             })
     }
 
@@ -498,6 +524,36 @@ mod tests {
         assert_eq!(
             StreamCheckService::extract_openclaw_base_url(&p2).unwrap(),
             "https://api.deepseek.com/v1"
+        );
+    }
+
+    #[test]
+    fn pi_reachability_uses_composer_effective_model_endpoint() {
+        let provider = make_provider(serde_json::json!({
+            "name": "Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://provider.example/v1",
+            "apiKey": "literal",
+            "models": [{
+                "id": "model",
+                "name": "Model",
+                "baseUrl": "https://model.example/custom",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0
+                },
+                "contextWindow": 128000,
+                "maxTokens": 8192
+            }]
+        }));
+
+        assert_eq!(
+            StreamCheckService::resolve_base_url(&AppType::Pi, &provider).unwrap(),
+            "https://model.example/custom"
         );
     }
 

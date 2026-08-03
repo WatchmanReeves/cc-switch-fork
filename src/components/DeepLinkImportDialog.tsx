@@ -405,6 +405,16 @@ export function DeepLinkImportDialog() {
                   </div>
 
                   {/* Model Fields - 根据应用类型显示不同的模型字段 */}
+                  {request.app === "pi" && request.api && (
+                    <div className="grid grid-cols-3 items-center gap-4">
+                      <div className="font-medium text-sm text-muted-foreground">
+                        {t("deeplink.api")}
+                      </div>
+                      <div className="col-span-2 text-sm font-mono">
+                        {request.api}
+                      </div>
+                    </div>
+                  )}
                   {request.app === "claude" ? (
                     <>
                       {/* Claude 四种模型字段 */}

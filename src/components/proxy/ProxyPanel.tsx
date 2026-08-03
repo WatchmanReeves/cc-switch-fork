@@ -9,6 +9,7 @@ import {
   Loader2,
   Zap,
   Power,
+  KeyRound,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -30,6 +31,13 @@ import type { ProxyStatus } from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { piApi } from "@/lib/api";
+import {
+  getAppLabel,
+  PROXY_APP_IDS,
+  type ProxyAppId,
+} from "@/config/appConfig";
 
 interface ProxyPanelProps {
   enableLocalProxy: boolean;
@@ -74,6 +82,9 @@ export function ProxyPanel({
   const { data: codexQueue = [] } = useFailoverQueue("codex");
   const { data: geminiQueue = [] } = useFailoverQueue("gemini");
   const { data: grokQueue = [] } = useFailoverQueue("grokbuild");
+  const { data: piQueue = [] } = useFailoverQueue("pi");
+  const [showPiCredentialConfirm, setShowPiCredentialConfirm] = useState(false);
+  const [isRotatingPiCredential, setIsRotatingPiCredential] = useState(false);
 
   const handleTakeoverChange = async (appType: string, enabled: boolean) => {
     try {
@@ -120,6 +131,24 @@ export function ProxyPanel({
       toast.error(
         t("proxy.logging.failed", { defaultValue: "切换日志状态失败" }),
       );
+    }
+  };
+
+  const handleRotatePiCredential = async () => {
+    setShowPiCredentialConfirm(false);
+    setIsRotatingPiCredential(true);
+    try {
+      await piApi.resetGatewayCredential();
+      toast.success(t("proxy.piGateway.rotateSuccess"), {
+        description: t("proxy.piGateway.restartNotice"),
+        closeButton: true,
+      });
+    } catch (error) {
+      toast.error(t("proxy.piGateway.rotateFailed"), {
+        description: extractErrorMessage(error) || String(error),
+      });
+    } finally {
+      setIsRotatingPiCredential(false);
     }
   };
 
@@ -274,32 +303,27 @@ export function ProxyPanel({
                     defaultValue: "应用接管",
                   })}
                 </p>
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  {(["claude", "codex", "gemini", "grokbuild"] as const).map(
-                    (appType) => {
-                      const isEnabled =
-                        takeoverStatus?.[
-                          appType as keyof typeof takeoverStatus
-                        ] ?? false;
-                      return (
-                        <div
-                          key={appType}
-                          className="flex items-center justify-between rounded-md border border-primary/20 bg-background/60 px-3 py-2"
-                        >
-                          <span className="text-sm font-medium capitalize">
-                            {appType === "grokbuild" ? "Grok Build" : appType}
-                          </span>
-                          <Switch
-                            checked={isEnabled}
-                            onCheckedChange={(checked) =>
-                              handleTakeoverChange(appType, checked)
-                            }
-                            disabled={setTakeoverForApp.isPending}
-                          />
-                        </div>
-                      );
-                    },
-                  )}
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                  {PROXY_APP_IDS.map((appType) => {
+                    const isEnabled = takeoverStatus?.[appType] ?? false;
+                    return (
+                      <div
+                        key={appType}
+                        className="flex items-center justify-between rounded-md border border-primary/20 bg-background/60 px-3 py-2"
+                      >
+                        <span className="text-sm font-medium">
+                          {getAppLabel(appType)}
+                        </span>
+                        <Switch
+                          checked={isEnabled}
+                          onCheckedChange={(checked) =>
+                            handleTakeoverChange(appType, checked)
+                          }
+                          disabled={setTakeoverForApp.isPending}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {t("proxy.takeover.hint", {
@@ -311,6 +335,35 @@ export function ProxyPanel({
             </motion.div>
           )}
         </AnimatePresence>
+
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card/50 p-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background ring-1 ring-border">
+              <KeyRound className="h-4 w-4 text-fuchsia-500" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-medium leading-none">
+                {t("proxy.piGateway.title")}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t("proxy.piGateway.description")}
+              </p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            disabled={isRotatingPiCredential}
+            onClick={() => setShowPiCredentialConfirm(true)}
+          >
+            {isRotatingPiCredential && (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            )}
+            {t("proxy.piGateway.rotate")}
+          </Button>
+        </div>
 
         {/* Running state: service info + stats */}
         {isRunning && status ? (
@@ -420,7 +473,8 @@ export function ProxyPanel({
               {(claudeQueue.length > 0 ||
                 codexQueue.length > 0 ||
                 geminiQueue.length > 0 ||
-                grokQueue.length > 0) && (
+                grokQueue.length > 0 ||
+                piQueue.length > 0) && (
                 <div className="pt-3 border-t border-border space-y-3">
                   <div className="flex items-center gap-2">
                     <ListOrdered className="h-3.5 w-3.5 text-muted-foreground" />
@@ -470,6 +524,18 @@ export function ProxyPanel({
                       appType="grokbuild"
                       appLabel="Grok Build"
                       targets={grokQueue.map((item) => ({
+                        id: item.providerId,
+                        name: item.providerName,
+                      }))}
+                      status={status}
+                    />
+                  )}
+
+                  {piQueue.length > 0 && (
+                    <ProviderQueueGroup
+                      appType="pi"
+                      appLabel="Pi"
+                      targets={piQueue.map((item) => ({
                         id: item.providerId,
                         name: item.providerName,
                       }))}
@@ -622,6 +688,15 @@ export function ProxyPanel({
           </div>
         )}
       </section>
+      <ConfirmDialog
+        isOpen={showPiCredentialConfirm}
+        variant="destructive"
+        title={t("proxy.piGateway.confirmTitle")}
+        message={t("proxy.piGateway.confirmMessage")}
+        confirmText={t("proxy.piGateway.rotate")}
+        onConfirm={() => void handleRotatePiCredential()}
+        onCancel={() => setShowPiCredentialConfirm(false)}
+      />
     </>
   );
 }
@@ -654,7 +729,7 @@ function StatCard({ icon, label, value, variant = "default" }: StatCardProps) {
 }
 
 interface ProviderQueueGroupProps {
-  appType: string;
+  appType: ProxyAppId;
   appLabel: string;
   targets: Array<{
     id: string;
@@ -706,7 +781,7 @@ interface ProviderQueueItemProps {
     name: string;
   };
   priority: number;
-  appType: string;
+  appType: ProxyAppId;
   isCurrent: boolean;
 }
 

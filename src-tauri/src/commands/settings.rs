@@ -48,6 +48,13 @@ fn merge_settings_for_save(
     // 开关）后、前端 query 缓存刷新前的一次全量保存会把旧 marker 重放回来，
     // 重新开启时被"复活"的标记挡住而漏迁。
     incoming.local_migrations = existing.local_migrations.clone();
+    // Pi gateway credential is an installation secret. Settings IPC can
+    // neither observe it (frontend projection clears it) nor mutate it.
+    incoming.pi_gateway_token = existing.pi_gateway_token.clone();
+    // Pi proxy behavior is committed through the proxy commands so a generic
+    // settings round-trip cannot bypass the switch/epoch publication boundary.
+    incoming.pi_takeover_enabled = existing.pi_takeover_enabled;
+    incoming.pi_proxy = existing.pi_proxy.clone();
     incoming
 }
 
@@ -63,12 +70,29 @@ pub async fn save_settings(
     state: tauri::State<'_, crate::store::AppState>,
     settings: crate::settings::AppSettings,
 ) -> Result<bool, String> {
+    // The frontend settings projection intentionally cannot mutate Pi's
+    // takeover bit or gateway secret. Serialize the read/merge/write with Pi
+    // catalog mutations so a concurrent toggle cannot be overwritten by a
+    // stale full-settings payload.
+    let pi_guard = state
+        .proxy_service
+        .lock_switch_for_app(crate::app_config::AppType::Pi.as_str())
+        .await;
     let existing = crate::settings::get_settings();
     let merged = merge_settings_for_save(settings, &existing);
     let unify_codex_changed =
         merged.unify_codex_session_history != existing.unify_codex_session_history;
     let unify_codex_enabled = merged.unify_codex_session_history;
-    crate::settings::update_settings(merged).map_err(|e| e.to_string())?;
+    state
+        .proxy_service
+        .replace_settings_with_pi_directory_boundary_under_lock(
+            &pi_guard,
+            &existing,
+            merged.clone(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    drop(pi_guard);
 
     // 统一会话开关变更时立即重写当前官方 Codex 供应商的 live 配置，
     // 不必等下一次切换才生效。
@@ -82,7 +106,18 @@ pub async fn save_settings(
             crate::services::provider::reapply_current_codex_official_live(state.inner())
         {
             log::warn!("统一 Codex 会话历史开关变更后重写 live 配置失败，回滚设置: {err}");
-            if let Err(rollback_err) = crate::settings::update_settings(existing) {
+            let pi_guard = state
+                .proxy_service
+                .lock_switch_for_app(crate::app_config::AppType::Pi.as_str())
+                .await;
+            let current = crate::settings::get_settings();
+            if let Err(rollback_err) = state
+                .proxy_service
+                .replace_settings_with_pi_directory_boundary_under_lock(
+                    &pi_guard, &current, existing,
+                )
+                .await
+            {
                 log::error!("回滚统一会话开关设置失败: {rollback_err}");
             }
             return Err(format!(
@@ -617,6 +652,28 @@ mod tests {
         let merged = merge_settings_for_save(incoming, &existing);
 
         assert!(merged.local_migrations.is_none());
+    }
+
+    #[test]
+    fn save_settings_cannot_bypass_pi_gateway_publication_ownership() {
+        let existing = AppSettings {
+            pi_takeover_enabled: true,
+            pi_proxy: crate::settings::PiProxySettings {
+                max_retries: 7,
+                ..crate::settings::PiProxySettings::default()
+            },
+            ..AppSettings::default()
+        };
+        let incoming = AppSettings {
+            pi_takeover_enabled: false,
+            pi_proxy: crate::settings::PiProxySettings::default(),
+            ..AppSettings::default()
+        };
+
+        let merged = merge_settings_for_save(incoming, &existing);
+
+        assert!(merged.pi_takeover_enabled);
+        assert_eq!(merged.pi_proxy.max_retries, 7);
     }
 }
 

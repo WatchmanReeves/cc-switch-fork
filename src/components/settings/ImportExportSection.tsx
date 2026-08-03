@@ -51,6 +51,9 @@ export function ImportExportSection({
         <p className="text-sm text-muted-foreground">
           {t("settings.importExportHint")}
         </p>
+        <p className="text-xs text-muted-foreground">
+          {t("settings.piImportExportBoundary")}
+        </p>
       </header>
 
       <div className="space-y-4 rounded-lg border border-border bg-muted/40 p-6">
@@ -189,7 +192,7 @@ function ImportStatusMessage({
         <div className="space-y-1.5">
           <p className="font-semibold">{t("settings.importPartialSuccess")}</p>
           <p className="text-yellow-600/80 dark:text-yellow-400/80">
-            {t("settings.importPartialHint")}
+            {errorMessage || t("settings.importPartialHint")}
           </p>
         </div>
       </div>

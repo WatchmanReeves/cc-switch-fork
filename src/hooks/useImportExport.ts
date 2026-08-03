@@ -115,6 +115,11 @@ export function useImportExport(
           "[useImportExport] Failed to sync live config",
           syncResult.error,
         );
+        setErrorMessage(
+          syncResult.error instanceof Error
+            ? syncResult.error.message
+            : String(syncResult.error ?? ""),
+        );
         setStatus("partial-success");
         toast.warning(
           t("settings.importPartialSuccess", {

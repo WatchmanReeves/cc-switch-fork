@@ -1,0 +1,723 @@
+{
+  "version": 1,
+  "execution": {
+    "engine": "typebox Value.Check",
+    "typeboxVersion": "1.3.7",
+    "schemaTarget": "ModelsConfigSchema.properties.providers.patternProperties['^.*$']"
+  },
+  "cases": [
+    {
+      "id": "all-schema-fields-valid",
+      "input": {
+        "name": "All Fields Provider",
+        "baseUrl": "https://all-fields.example/v1",
+        "apiKey": "literal-all-fields-key",
+        "api": "openai-responses",
+        "oauth": "radius",
+        "headers": {
+          "x-provider-field": "provider-value"
+        },
+        "compat": {
+          "supportsStore": true,
+          "supportsDeveloperRole": true,
+          "supportsReasoningEffort": true,
+          "supportsUsageInStreaming": true,
+          "maxTokensField": "max_completion_tokens",
+          "requiresToolResultName": true,
+          "requiresAssistantAfterToolResult": true,
+          "requiresThinkingAsText": true,
+          "requiresReasoningContentOnAssistantMessages": true,
+          "thinkingFormat": "chat-template",
+          "chatTemplateKwargs": {
+            "stringValue": "literal",
+            "numberValue": 1.25,
+            "booleanValue": true,
+            "nullValue": null,
+            "variableValue": {
+              "$var": "thinking.effort",
+              "omitWhenOff": true
+            }
+          },
+          "cacheControlFormat": "anthropic",
+          "openRouterRouting": {
+            "allow_fallbacks": true,
+            "require_parameters": true,
+            "data_collection": "deny",
+            "zdr": true,
+            "enforce_distillable_text": true,
+            "order": [
+              "provider-a",
+              "provider-b"
+            ],
+            "only": [
+              "provider-a"
+            ],
+            "ignore": [
+              "provider-z"
+            ],
+            "quantizations": [
+              "fp8"
+            ],
+            "sort": {
+              "by": "price",
+              "partition": null
+            },
+            "max_price": {
+              "prompt": 1.1,
+              "completion": "2.2",
+              "image": 3.3,
+              "audio": "4.4",
+              "request": 5.5
+            },
+            "preferred_min_throughput": {
+              "p50": 10.5,
+              "p75": 9.5,
+              "p90": 8.5,
+              "p99": 7.5
+            },
+            "preferred_max_latency": {
+              "p50": 100.5,
+              "p75": 200.5,
+              "p90": 300.5,
+              "p99": 400.5
+            }
+          },
+          "vercelGatewayRouting": {
+            "only": [
+              "provider-a"
+            ],
+            "order": [
+              "provider-a",
+              "provider-b"
+            ]
+          },
+          "supportsOpenAIGrammarTools": true,
+          "supportsStrictMode": true,
+          "sendSessionAffinityHeaders": true,
+          "deferredToolsMode": "kimi",
+          "sessionAffinityFormat": "openrouter",
+          "supportsLongCacheRetention": true,
+          "supportsToolSearch": true,
+          "supportsEagerToolInputStreaming": true,
+          "supportsCacheControlOnTools": true,
+          "supportsTemperature": true,
+          "forceAdaptiveThinking": true,
+          "allowEmptySignature": true,
+          "supportsStrictTools": true,
+          "supportsToolReferences": true
+        },
+        "authHeader": true,
+        "models": [
+          {
+            "id": "all-fields-model",
+            "name": "All Fields Model",
+            "api": "anthropic-messages",
+            "baseUrl": "https://all-fields-model.example/v1",
+            "reasoning": true,
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": "minimal-effort",
+              "low": "low-effort",
+              "medium": "medium-effort",
+              "high": "high-effort",
+              "xhigh": "xhigh-effort",
+              "max": "max-effort"
+            },
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0.11,
+              "output": 0.22,
+              "cacheRead": 0.033,
+              "cacheWrite": 0.044,
+              "tiers": [
+                {
+                  "inputTokensAbove": 1000.5,
+                  "input": 0.55,
+                  "output": 0.66,
+                  "cacheRead": 0.077,
+                  "cacheWrite": 0.088
+                }
+              ]
+            },
+            "contextWindow": 128000.5,
+            "maxTokens": 16384.25,
+            "headers": {
+              "x-model-field": "model-value"
+            },
+            "compat": {
+              "supportsStore": true,
+              "supportsDeveloperRole": true,
+              "supportsReasoningEffort": true,
+              "supportsUsageInStreaming": true,
+              "maxTokensField": "max_completion_tokens",
+              "requiresToolResultName": true,
+              "requiresAssistantAfterToolResult": true,
+              "requiresThinkingAsText": true,
+              "requiresReasoningContentOnAssistantMessages": true,
+              "thinkingFormat": "chat-template",
+              "chatTemplateKwargs": {
+                "stringValue": "literal",
+                "numberValue": 1.25,
+                "booleanValue": true,
+                "nullValue": null,
+                "variableValue": {
+                  "$var": "thinking.effort",
+                  "omitWhenOff": true
+                }
+              },
+              "cacheControlFormat": "anthropic",
+              "openRouterRouting": {
+                "allow_fallbacks": true,
+                "require_parameters": true,
+                "data_collection": "deny",
+                "zdr": true,
+                "enforce_distillable_text": true,
+                "order": [
+                  "provider-a",
+                  "provider-b"
+                ],
+                "only": [
+                  "provider-a"
+                ],
+                "ignore": [
+                  "provider-z"
+                ],
+                "quantizations": [
+                  "fp8"
+                ],
+                "sort": {
+                  "by": "price",
+                  "partition": null
+                },
+                "max_price": {
+                  "prompt": 1.1,
+                  "completion": "2.2",
+                  "image": 3.3,
+                  "audio": "4.4",
+                  "request": 5.5
+                },
+                "preferred_min_throughput": {
+                  "p50": 10.5,
+                  "p75": 9.5,
+                  "p90": 8.5,
+                  "p99": 7.5
+                },
+                "preferred_max_latency": {
+                  "p50": 100.5,
+                  "p75": 200.5,
+                  "p90": 300.5,
+                  "p99": 400.5
+                }
+              },
+              "vercelGatewayRouting": {
+                "only": [
+                  "provider-a"
+                ],
+                "order": [
+                  "provider-a",
+                  "provider-b"
+                ]
+              },
+              "supportsOpenAIGrammarTools": true,
+              "supportsStrictMode": true,
+              "sendSessionAffinityHeaders": true,
+              "deferredToolsMode": "kimi",
+              "sessionAffinityFormat": "openrouter",
+              "supportsLongCacheRetention": true,
+              "supportsToolSearch": true,
+              "supportsEagerToolInputStreaming": true,
+              "supportsCacheControlOnTools": true,
+              "supportsTemperature": true,
+              "forceAdaptiveThinking": true,
+              "allowEmptySignature": true,
+              "supportsStrictTools": true,
+              "supportsToolReferences": true
+            }
+          }
+        ],
+        "modelOverrides": {
+          "all-fields-model": {
+            "name": "All Fields Override",
+            "reasoning": false,
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": "minimal-effort",
+              "low": "low-effort",
+              "medium": "medium-effort",
+              "high": "high-effort",
+              "xhigh": "xhigh-effort",
+              "max": "max-effort"
+            },
+            "input": [
+              "image",
+              "text"
+            ],
+            "cost": {
+              "input": 0.11,
+              "output": 0.22,
+              "cacheRead": 0.033,
+              "cacheWrite": 0.044,
+              "tiers": [
+                {
+                  "inputTokensAbove": 1000.5,
+                  "input": 0.55,
+                  "output": 0.66,
+                  "cacheRead": 0.077,
+                  "cacheWrite": 0.088
+                }
+              ]
+            },
+            "contextWindow": 256000.75,
+            "maxTokens": 32768.5,
+            "headers": {
+              "x-override-field": "override-value"
+            },
+            "compat": {
+              "supportsStore": true,
+              "supportsDeveloperRole": true,
+              "supportsReasoningEffort": true,
+              "supportsUsageInStreaming": true,
+              "maxTokensField": "max_completion_tokens",
+              "requiresToolResultName": true,
+              "requiresAssistantAfterToolResult": true,
+              "requiresThinkingAsText": true,
+              "requiresReasoningContentOnAssistantMessages": true,
+              "thinkingFormat": "chat-template",
+              "chatTemplateKwargs": {
+                "stringValue": "literal",
+                "numberValue": 1.25,
+                "booleanValue": true,
+                "nullValue": null,
+                "variableValue": {
+                  "$var": "thinking.effort",
+                  "omitWhenOff": true
+                }
+              },
+              "cacheControlFormat": "anthropic",
+              "openRouterRouting": {
+                "allow_fallbacks": true,
+                "require_parameters": true,
+                "data_collection": "deny",
+                "zdr": true,
+                "enforce_distillable_text": true,
+                "order": [
+                  "provider-a",
+                  "provider-b"
+                ],
+                "only": [
+                  "provider-a"
+                ],
+                "ignore": [
+                  "provider-z"
+                ],
+                "quantizations": [
+                  "fp8"
+                ],
+                "sort": {
+                  "by": "price",
+                  "partition": null
+                },
+                "max_price": {
+                  "prompt": 1.1,
+                  "completion": "2.2",
+                  "image": 3.3,
+                  "audio": "4.4",
+                  "request": 5.5
+                },
+                "preferred_min_throughput": {
+                  "p50": 10.5,
+                  "p75": 9.5,
+                  "p90": 8.5,
+                  "p99": 7.5
+                },
+                "preferred_max_latency": {
+                  "p50": 100.5,
+                  "p75": 200.5,
+                  "p90": 300.5,
+                  "p99": 400.5
+                }
+              },
+              "vercelGatewayRouting": {
+                "only": [
+                  "provider-a"
+                ],
+                "order": [
+                  "provider-a",
+                  "provider-b"
+                ]
+              },
+              "supportsOpenAIGrammarTools": true,
+              "supportsStrictMode": true,
+              "sendSessionAffinityHeaders": true,
+              "deferredToolsMode": "kimi",
+              "sessionAffinityFormat": "openrouter",
+              "supportsLongCacheRetention": true,
+              "supportsToolSearch": true,
+              "supportsEagerToolInputStreaming": true,
+              "supportsCacheControlOnTools": true,
+              "supportsTemperature": true,
+              "forceAdaptiveThinking": true,
+              "allowEmptySignature": true,
+              "supportsStrictTools": true,
+              "supportsToolReferences": true
+            }
+          }
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "empty-provider-object",
+      "input": {},
+      "expectedValid": true
+    },
+    {
+      "id": "null-provider",
+      "input": null,
+      "expectedValid": false
+    },
+    {
+      "id": "additional-provider-property",
+      "input": {
+        "futureProviderField": {
+          "nested": true
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "empty-present-base-url",
+      "input": {
+        "baseUrl": ""
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "non-url-base-url-is-raw-string",
+      "input": {
+        "baseUrl": "not a URL"
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "radius-oauth",
+      "input": {
+        "oauth": "radius"
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "unknown-oauth-literal",
+      "input": {
+        "oauth": "other"
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "models-null",
+      "input": {
+        "models": null
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "model-missing-id",
+      "input": {
+        "models": [
+          {
+            "api": "openai-responses"
+          }
+        ]
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "model-empty-id",
+      "input": {
+        "models": [
+          {
+            "id": ""
+          }
+        ]
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "integer-model-numbers",
+      "input": {
+        "models": [
+          {
+            "id": "integer",
+            "contextWindow": 128000,
+            "maxTokens": 16384
+          }
+        ]
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "fractional-model-numbers",
+      "input": {
+        "models": [
+          {
+            "id": "fractional",
+            "contextWindow": 128000.5,
+            "maxTokens": 16384.25
+          }
+        ]
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "negative-number-is-still-typebox-number",
+      "input": {
+        "models": [
+          {
+            "id": "negative",
+            "maxTokens": -1.5
+          }
+        ]
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "string-is-not-number",
+      "input": {
+        "models": [
+          {
+            "id": "string-limit",
+            "maxTokens": "16384"
+          }
+        ]
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "complete-cost-with-fractions",
+      "input": {
+        "models": [
+          {
+            "id": "priced",
+            "cost": {
+              "input": 0.1,
+              "output": 0.2,
+              "cacheRead": 0.03,
+              "cacheWrite": 0.04,
+              "tiers": [
+                {
+                  "inputTokensAbove": 1000.5,
+                  "input": 0.5,
+                  "output": 0.6,
+                  "cacheRead": 0.07,
+                  "cacheWrite": 0.08
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "incomplete-model-cost",
+      "input": {
+        "models": [
+          {
+            "id": "priced",
+            "cost": {
+              "input": 0.1,
+              "output": 0.2,
+              "cacheRead": 0.03
+            }
+          }
+        ]
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "compat-openrouter-recursive-valid",
+      "input": {
+        "compat": {
+          "thinkingFormat": "chat-template",
+          "chatTemplateKwargs": {
+            "temperature": 0.25,
+            "thinking": {
+              "$var": "thinking.effort",
+              "omitWhenOff": true
+            },
+            "nullable": null
+          },
+          "openRouterRouting": {
+            "data_collection": "deny",
+            "sort": {
+              "by": "price",
+              "partition": null
+            },
+            "max_price": {
+              "prompt": 1.5,
+              "completion": "2.0"
+            },
+            "preferred_min_throughput": {
+              "p50": 10.5,
+              "p99": 2
+            }
+          }
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "compat-nested-union-invalid-in-every-branch",
+      "input": {
+        "compat": {
+          "openRouterRouting": {
+            "preferred_min_throughput": {
+              "p50": "fast"
+            }
+          },
+          "supportsToolSearch": "yes",
+          "supportsTemperature": 1
+        }
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "compat-union-additional-field",
+      "input": {
+        "compat": {
+          "futureCompatField": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "compat-null",
+      "input": {
+        "compat": null
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "thinking-map-unknown-key-and-string-value",
+      "input": {
+        "models": [
+          {
+            "id": "thinking",
+            "thinkingLevelMap": {
+              "low": null,
+              "max": "future-effort",
+              "future": {
+                "nested": true
+              }
+            }
+          }
+        ]
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "thinking-map-known-key-invalid-value",
+      "input": {
+        "models": [
+          {
+            "id": "thinking",
+            "thinkingLevelMap": {
+              "low": 2
+            }
+          }
+        ]
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "compat-sort-string-union-branch",
+      "input": {
+        "compat": {
+          "openRouterRouting": {
+            "sort": "price"
+          }
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "compat-sort-object-union-branch",
+      "input": {
+        "compat": {
+          "openRouterRouting": {
+            "sort": {
+              "by": "price",
+              "partition": null
+            }
+          }
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "compat-sort-invalid-union-boundary",
+      "input": {
+        "compat": {
+          "openRouterRouting": {
+            "sort": false
+          }
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "headers-record-valid",
+      "input": {
+        "headers": {
+          "Authorization": "Bearer literal",
+          "x-count": "2"
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "headers-record-invalid-value",
+      "input": {
+        "headers": {
+          "x-count": 2
+        }
+      },
+      "expectedValid": false
+    },
+    {
+      "id": "model-override-fractional-and-extra",
+      "input": {
+        "modelOverrides": {
+          "model/a": {
+            "contextWindow": 10.5,
+            "maxTokens": 2.25,
+            "futureOverrideField": true
+          }
+        }
+      },
+      "expectedValid": true
+    },
+    {
+      "id": "input-union-invalid",
+      "input": {
+        "models": [
+          {
+            "id": "input",
+            "input": [
+              "text",
+              "audio"
+            ]
+          }
+        ]
+      },
+      "expectedValid": false
+    }
+  ]
+}

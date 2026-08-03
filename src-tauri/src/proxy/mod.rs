@@ -21,6 +21,8 @@ pub(crate) mod json_canonical;
 pub mod log_codes;
 pub mod media_sanitizer;
 pub mod model_mapper;
+pub(crate) mod pi_handler;
+pub(crate) mod pi_runtime;
 pub mod provider_router;
 pub mod providers;
 pub mod response_processor;

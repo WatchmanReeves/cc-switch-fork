@@ -12,6 +12,7 @@ use super::{
     failover_switch::FailoverSwitchManager,
     handlers,
     log_codes::srv as log_srv,
+    pi_runtime::PiRuntimeStore,
     provider_router::ProviderRouter,
     providers::{codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore},
     types::*,
@@ -48,6 +49,11 @@ pub struct ProxyState {
     pub app_handle: Option<tauri::AppHandle>,
     /// 故障转移切换管理器
     pub failover_manager: Arc<FailoverSwitchManager>,
+    /// Immutable Pi catalog publication point shared with `ProxyService`.
+    pub pi_runtime: Arc<PiRuntimeStore>,
+    /// Listener instance identity. A runtime built for an older listener can
+    /// never admit requests through this state.
+    pub pi_server_generation: u64,
 }
 
 /// 代理HTTP服务器
@@ -57,6 +63,7 @@ pub struct ProxyServer {
     shutdown_tx: Arc<RwLock<Option<oneshot::Sender<()>>>>,
     /// 服务器任务句柄，用于等待服务器实际关闭
     server_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    pi_server_generation: u64,
 }
 
 impl ProxyServer {
@@ -64,6 +71,8 @@ impl ProxyServer {
         config: ProxyConfig,
         db: Arc<Database>,
         app_handle: Option<tauri::AppHandle>,
+        pi_runtime: Arc<PiRuntimeStore>,
+        pi_server_generation: u64,
     ) -> Self {
         // 创建共享的 ProviderRouter（熔断器状态将跨所有请求保持）
         let provider_router = Arc::new(ProviderRouter::new(db.clone()));
@@ -81,6 +90,8 @@ impl ProxyServer {
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle,
             failover_manager,
+            pi_runtime,
+            pi_server_generation,
         };
 
         Self {
@@ -88,7 +99,12 @@ impl ProxyServer {
             state,
             shutdown_tx: Arc::new(RwLock::new(None)),
             server_handle: Arc::new(RwLock::new(None)),
+            pi_server_generation,
         }
+    }
+
+    pub(crate) fn pi_server_generation(&self) -> u64 {
+        self.pi_server_generation
     }
 
     pub async fn start(&self) -> Result<ProxyServerInfo, ProxyError> {
@@ -364,6 +380,12 @@ impl ProxyServer {
             .route("/gemini/v1beta/*path", any(handlers::handle_gemini))
             // Gemini 的 GA 版本也叫 /v1，给原 SDK 留一条出口
             .route("/gemini/v1/*path", any(handlers::handle_gemini))
+            // Pi native SDK requests retain their family-specific path below
+            // the opaque provider route token.
+            .route(
+                "/pi/:route_token/*path",
+                any(super::pi_handler::handle_pi_native),
+            )
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
             .with_state(self.state.clone())

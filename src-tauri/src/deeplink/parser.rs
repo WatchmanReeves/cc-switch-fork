@@ -81,10 +81,10 @@ fn parse_provider_deeplink(
     // Validate app type
     if !matches!(
         app.as_str(),
-        "claude" | "codex" | "gemini" | "grokbuild" | "opencode" | "openclaw" | "hermes"
+        "claude" | "codex" | "gemini" | "grokbuild" | "opencode" | "openclaw" | "hermes" | "pi"
     ) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid app type: must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', 'openclaw', or 'hermes', got '{app}'"
+            "Invalid app type: must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', 'openclaw', 'hermes', or 'pi', got '{app}'"
         )));
     }
 
@@ -116,6 +116,7 @@ fn parse_provider_deeplink(
 
     // Extract optional fields
     let model = params.get("model").cloned();
+    let api = params.get("api").cloned();
     let notes = params.get("notes").cloned();
     let haiku_model = params.get("haikuModel").cloned();
     let sonnet_model = params.get("sonnetModel").cloned();
@@ -127,6 +128,24 @@ fn parse_provider_deeplink(
     let config = params.get("config").cloned();
     let config_format = params.get("configFormat").cloned();
     let config_url = params.get("configUrl").cloned();
+    if app == "pi" {
+        if model.as_deref().is_none_or(|value| value.trim().is_empty()) {
+            return Err(AppError::InvalidInput(
+                "Pi provider deep links require a non-empty 'model' parameter".to_string(),
+            ));
+        }
+        if api.as_deref().is_none_or(|value| value.trim().is_empty()) {
+            return Err(AppError::InvalidInput(
+                "Pi provider deep links require an explicit non-empty 'api' parameter".to_string(),
+            ));
+        }
+        if config.is_some() || config_url.is_some() {
+            return Err(AppError::InvalidInput(
+                "Pi provider deep links use explicit endpoint/api/model fields; embedded or remote config payloads are not supported"
+                    .to_string(),
+            ));
+        }
+    }
     let enabled = params.get("enabled").and_then(|v| v.parse::<bool>().ok());
 
     // Extract usage script fields (v3.9+)
@@ -153,6 +172,7 @@ fn parse_provider_deeplink(
         api_key,
         icon,
         model,
+        api,
         notes,
         haiku_model,
         sonnet_model,
@@ -190,10 +210,10 @@ fn parse_prompt_deeplink(
     // Validate app type
     if !matches!(
         app.as_str(),
-        "claude" | "codex" | "gemini" | "grokbuild" | "opencode" | "openclaw" | "hermes"
+        "claude" | "codex" | "gemini" | "grokbuild" | "opencode" | "openclaw" | "hermes" | "pi"
     ) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid app type: must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', 'openclaw', or 'hermes', got '{app}'"
+            "Invalid app type: must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', 'openclaw', 'hermes', or 'pi', got '{app}'"
         )));
     }
 
@@ -225,6 +245,7 @@ fn parse_prompt_deeplink(
         endpoint: None,
         api_key: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -298,6 +319,7 @@ fn parse_mcp_deeplink(
         endpoint: None,
         api_key: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -353,6 +375,7 @@ fn parse_skill_deeplink(
         endpoint: None,
         api_key: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,

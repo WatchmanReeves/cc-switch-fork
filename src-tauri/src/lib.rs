@@ -25,6 +25,7 @@ mod model_capabilities;
 mod openclaw_config;
 mod opencode_config;
 mod panic_hook;
+mod pi_config;
 mod prompt;
 mod prompt_files;
 mod provider;
@@ -37,6 +38,9 @@ mod store;
 mod tray;
 mod usage_events;
 mod usage_script;
+
+#[cfg(test)]
+mod architecture_tests;
 
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
 pub use codex_config::{
@@ -949,6 +953,7 @@ pub fn run() {
                     crate::app_config::AppType::OpenCode,
                     crate::app_config::AppType::OpenClaw,
                     crate::app_config::AppType::Hermes,
+                    crate::app_config::AppType::Pi,
                 ] {
                     match crate::services::prompt::PromptService::import_from_file_on_first_launch(
                         &app_state,
@@ -1327,6 +1332,12 @@ pub fn run() {
             commands::remove_provider_from_live_config,
             commands::switch_provider,
             commands::import_default_config,
+            commands::get_pi_native_catalog,
+            commands::import_pi_native_provider,
+            commands::set_pi_default_model,
+            commands::get_pi_native_defaults,
+            commands::get_pi_session_discovery,
+            commands::reset_pi_gateway_credential,
             commands::get_claude_desktop_status,
             commands::get_claude_desktop_default_routes,
             commands::import_claude_desktop_providers_from_claude,
@@ -1411,6 +1422,14 @@ pub fn run() {
             commands::enable_prompt,
             commands::import_prompt_from_file,
             commands::get_current_prompt_file_content,
+            commands::get_pi_prompt_library_status,
+            commands::reconcile_pi_prompt_library,
+            commands::get_pi_prompt_file,
+            commands::replace_pi_prompt_file,
+            commands::delete_pi_prompt_file,
+            commands::list_pi_prompt_templates,
+            commands::upsert_pi_prompt_template,
+            commands::delete_pi_prompt_template,
             // Profile management (项目配置方案)
             commands::list_profiles,
             commands::create_profile,
@@ -1465,6 +1484,7 @@ pub fn run() {
             commands::restore_env_backup,
             // Skill management (v3.10.0+ unified)
             commands::get_installed_skills,
+            commands::get_pi_skill_statuses,
             commands::get_skill_backups,
             commands::delete_skill_backup,
             commands::install_skill_unified,
@@ -1830,7 +1850,11 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
             }
         };
         let live_taken_over = proxy_service.detect_takeover_in_live_configs();
-        let needs_restore = has_backups || live_taken_over;
+        let needs_restore = cleanup_before_exit_needed(
+            has_backups,
+            live_taken_over,
+            crate::settings::pi_takeover_enabled(),
+        );
 
         if needs_restore {
             log::info!("检测到接管残留，开始恢复 Live 配置（保留代理状态）...");
@@ -1852,6 +1876,14 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
             log::info!("代理服务器清理完成");
         }
     }
+}
+
+fn cleanup_before_exit_needed(
+    has_live_backups: bool,
+    legacy_live_taken_over: bool,
+    pi_takeover_enabled: bool,
+) -> bool {
+    has_live_backups || legacy_live_taken_over || pi_takeover_enabled
 }
 
 /// 主动从系统托盘移除托盘图标。
@@ -1884,7 +1916,10 @@ pub(crate) fn remove_tray_icon_before_exit(app_handle: &tauri::AppHandle) {
 /// 则自动启动代理服务并接管对应应用的 Live 配置。
 const PROXY_STARTUP_APP_TYPES: [&str; 4] = ["claude", "codex", "gemini", "grokbuild"];
 
-async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static str> {
+async fn enabled_proxy_apps_on_startup(
+    db: &database::Database,
+    pi_takeover_enabled: bool,
+) -> Vec<&'static str> {
     let mut apps = Vec::new();
     for app_type in PROXY_STARTUP_APP_TYPES {
         if db
@@ -1895,12 +1930,16 @@ async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static 
             apps.push(app_type);
         }
     }
+    if pi_takeover_enabled {
+        apps.push("pi");
+    }
     apps
 }
 
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
     // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
-    let apps_to_restore = enabled_proxy_apps_on_startup(&state.db).await;
+    let apps_to_restore =
+        enabled_proxy_apps_on_startup(&state.db, crate::settings::pi_takeover_enabled()).await;
 
     if apps_to_restore.is_empty() {
         log::debug!("启动时无需恢复代理状态");
@@ -1921,7 +1960,15 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
             }
             Err(e) => {
                 log::error!("✗ 恢复 {app_type} 的代理接管状态失败: {e}");
-                // 失败时清除该应用的状态，避免下次启动再次尝试
+                // Pi desired state is device-local user intent. Keep it
+                // pending/degraded so a transient bind or projection failure
+                // is retried on the next startup.
+                if app_type == "pi" {
+                    continue;
+                }
+                // Legacy live-config apps retain their historical cleanup
+                // behavior because their enabled bit also describes a live
+                // file takeover, not an independent desired/operational pair.
                 if let Err(clear_err) = state
                     .proxy_service
                     .set_takeover_for_app(app_type, false)
@@ -2223,9 +2270,9 @@ pub fn restart_process(app_handle: &tauri::AppHandle) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_exit_request, enabled_proxy_apps_on_startup, redact_url_for_log,
-        redact_url_for_log_with_secrets, redact_url_origin_for_log, runtime_log_level_allows,
-        ExitRequestAction,
+        classify_exit_request, cleanup_before_exit_needed, enabled_proxy_apps_on_startup,
+        redact_url_for_log, redact_url_for_log_with_secrets, redact_url_origin_for_log,
+        runtime_log_level_allows, ExitRequestAction,
     };
     use crate::database::Database;
 
@@ -2347,8 +2394,21 @@ mod tests {
             .await
             .expect("enable Grok Build proxy config");
 
-        let apps = enabled_proxy_apps_on_startup(&db).await;
+        let apps = enabled_proxy_apps_on_startup(&db, false).await;
 
         assert_eq!(apps, vec!["grokbuild"]);
+    }
+
+    #[tokio::test]
+    async fn startup_restore_republishes_persisted_pi_takeover() {
+        let db = Database::memory().expect("initialize database");
+        let apps = enabled_proxy_apps_on_startup(&db, true).await;
+        assert_eq!(apps, vec!["pi"]);
+    }
+
+    #[test]
+    fn process_exit_cleanup_includes_pi_takeover_without_legacy_live_backups() {
+        assert!(cleanup_before_exit_needed(false, false, true));
+        assert!(!cleanup_before_exit_needed(false, false, false));
     }
 }

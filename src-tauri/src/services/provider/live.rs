@@ -530,6 +530,7 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
         | AppType::ClaudeDesktop => false,
     }
 }
@@ -604,6 +605,7 @@ pub(crate) fn remove_common_config_from_settings(
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -663,6 +665,7 @@ fn apply_common_config_to_settings(
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
+        | AppType::Pi
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -1165,6 +1168,13 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             crate::hermes_config::set_provider(&provider.id, provider.settings_config.clone())?;
             log::debug!("Hermes provider '{}' written to live config", provider.id);
         }
+        AppType::Pi => {
+            return Err(AppError::localized(
+                "pi.live.requires_catalog_coordinator",
+                "Pi 的共享 models.json 必须通过 Pi 目录协调器写入",
+                "Pi's shared models.json must be written through the Pi catalog coordinator",
+            ));
+        }
     }
     Ok(())
 }
@@ -1281,6 +1291,10 @@ fn sync_current_provider_for_app_respecting_takeover(
 pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
     // Sync providers based on mode
     for app_type in AppType::all() {
+        if matches!(app_type, AppType::Pi) {
+            crate::services::pi_catalog::PiCatalogCoordinator::reconcile_portable_import(state)?;
+            continue;
+        }
         if app_type.is_additive_mode() {
             // Provider rename and every additive live mutation share this
             // per-app lock.  Acquire it before reading the catalog so a key
@@ -1426,6 +1440,11 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             let config = crate::hermes_config::yaml_to_json(&yaml_config)?;
             Ok(config)
         }
+        AppType::Pi => Err(AppError::localized(
+            "pi.live.requires_catalog_inspection",
+            "Pi 的共享 models.json 必须通过 Pi 原生目录检查服务读取",
+            "Pi's shared models.json must be read through the Pi native catalog inspection service",
+        )),
     }
 }
 
@@ -1533,6 +1552,13 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
                 "env": env_obj,
                 "config": config_obj
             })
+        }
+        AppType::Pi => {
+            return Err(AppError::localized(
+                "pi.import.requires_catalog_coordinator",
+                "Pi 原生供应商必须通过 Pi 目录导入流程导入",
+                "Native Pi providers must be imported through the Pi catalog import flow",
+            ));
         }
         // OpenCode, OpenClaw and Hermes use additive mode and are handled by early return above
         AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {

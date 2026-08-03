@@ -5,7 +5,11 @@
 use crate::app_config::AppType;
 use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
 use crate::database::Database;
+use crate::error::AppError;
 use crate::provider::Provider;
+use crate::proxy::pi_runtime::{
+    build_pi_runtime, direct_pi_projection_patch, project_managed_pi_config, PiRuntimeStore,
+};
 use crate::proxy::server::ProxyServer;
 use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
@@ -14,11 +18,18 @@ use crate::services::provider::{
     provider_to_mutation_input, reconcile_provider_record_with_precondition,
     write_live_with_common_config, ReconcilePrecondition,
 };
+use crate::services::{pi_prompt_files::lock_instruction_files_async, prompt::PromptService};
 use serde_json::{json, Map, Value};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, RwLock as StdRwLock,
+};
 use tauri::Emitter;
 use tokio::sync::RwLock;
+
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
 const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
@@ -63,6 +74,40 @@ pub struct ProxyService {
     /// AppHandle，用于传递给 ProxyServer 以支持故障转移时的 UI 更新
     app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
     switch_locks: SwitchLockManager,
+    pi_runtime: Arc<PiRuntimeStore>,
+    pi_server_sequence: Arc<AtomicU64>,
+    pi_listener: Arc<StdRwLock<Option<PiListenerIdentity>>>,
+    #[cfg(test)]
+    fail_next_pi_reconcile: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone)]
+struct PiListenerIdentity {
+    server_generation: u64,
+    gateway_origin: url::Url,
+}
+
+fn pi_loopback_origin(address: &str, port: u16) -> Result<url::Url, AppError> {
+    let host = if address.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1".to_string()
+    } else {
+        let ip = address.parse::<std::net::IpAddr>().map_err(|_| {
+            AppError::Config(format!(
+                "Pi gateway requires an explicit loopback listener, got '{address}'"
+            ))
+        })?;
+        if !ip.is_loopback() {
+            return Err(AppError::Config(format!(
+                "Pi gateway refuses non-loopback listener '{address}'"
+            )));
+        }
+        match ip {
+            std::net::IpAddr::V4(value) => value.to_string(),
+            std::net::IpAddr::V6(value) => format!("[{value}]"),
+        }
+    };
+    url::Url::parse(&format!("http://{host}:{port}/"))
+        .map_err(|error| AppError::Config(format!("invalid Pi listener origin: {error}")))
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -77,6 +122,11 @@ impl ProxyService {
             server: Arc::new(RwLock::new(None)),
             app_handle: Arc::new(RwLock::new(None)),
             switch_locks: SwitchLockManager::new(),
+            pi_runtime: Arc::new(PiRuntimeStore::default()),
+            pi_server_sequence: Arc::new(AtomicU64::new(0)),
+            pi_listener: Arc::new(StdRwLock::new(None)),
+            #[cfg(test)]
+            fail_next_pi_reconcile: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -526,8 +576,736 @@ impl ProxyService {
         self.switch_locks.lock_for_app(app_type).await
     }
 
+    pub(crate) async fn begin_pi_catalog_mutation(&self) -> u64 {
+        self.pi_runtime.begin_mutation().await
+    }
+
+    pub(crate) async fn close_pi_runtime_at_epoch(
+        &self,
+        catalog_epoch: u64,
+    ) -> Result<(), AppError> {
+        self.pi_runtime.close(catalog_epoch).await
+    }
+
+    pub(crate) fn project_pi_provider_value(
+        &self,
+        provider_id: &str,
+        provider_key: &str,
+        config: &crate::pi_config::model::PiManagedProviderConfig,
+    ) -> Result<Value, AppError> {
+        if !crate::settings::pi_takeover_enabled() {
+            return serde_json::to_value(config)
+                .map_err(|source| AppError::JsonSerialize { source });
+        }
+        let listener = self
+            .pi_listener
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "Pi gateway projection is desired but no loopback listener is active"
+                        .to_string(),
+                )
+            })?;
+        let token = crate::settings::get_or_create_pi_gateway_token()?;
+        project_managed_pi_config(
+            provider_id,
+            provider_key,
+            config,
+            &listener.gateway_origin,
+            &token,
+        )
+    }
+
+    pub(crate) async fn reconcile_pi_runtime_at_epoch(
+        &self,
+        catalog_epoch: u64,
+    ) -> Result<Vec<String>, AppError> {
+        self.reconcile_pi_runtime_at_epoch_with_native_precondition(catalog_epoch, None)
+            .await
+    }
+
+    pub(crate) async fn reconcile_pi_runtime_at_epoch_with_native_precondition(
+        &self,
+        catalog_epoch: u64,
+        expected_native: Option<&crate::pi_config::document::PiProviderValuesSnapshot>,
+    ) -> Result<Vec<String>, AppError> {
+        self.reconcile_pi_runtime_at_epoch_with_native_claim_precondition(
+            catalog_epoch,
+            expected_native,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn reconcile_pi_runtime_at_epoch_with_native_claim_precondition(
+        &self,
+        catalog_epoch: u64,
+        expected_native: Option<&crate::pi_config::document::PiProviderValuesSnapshot>,
+        expected_fingerprints: Option<&indexmap::IndexMap<String, String>>,
+    ) -> Result<Vec<String>, AppError> {
+        #[cfg(test)]
+        if self.fail_next_pi_reconcile.swap(false, Ordering::AcqRel) {
+            return Err(AppError::Config(
+                "injected Pi runtime reconciliation failure".to_string(),
+            ));
+        }
+        if !crate::settings::pi_takeover_enabled() {
+            self.pi_runtime.close(catalog_epoch).await?;
+            if let Some(expected_native) = expected_native {
+                let models_path = crate::pi_config::native::get_pi_models_path()?;
+                match expected_fingerprints {
+                    Some(expected_fingerprints) => {
+                        crate::pi_config::document::verify_pi_provider_preconditions(
+                            &models_path,
+                            &expected_native.values,
+                            expected_fingerprints,
+                        )?;
+                    }
+                    None => crate::pi_config::document::verify_pi_provider_values(
+                        &models_path,
+                        &expected_native.values,
+                    )?,
+                }
+            }
+            return Ok(Vec::new());
+        }
+        let listener = self
+            .pi_listener
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "Pi takeover is desired but the loopback listener is unavailable".to_string(),
+                )
+            })?;
+        let token = crate::settings::get_or_create_pi_gateway_token()?;
+        let app_config = crate::settings::get_pi_app_proxy_config();
+        let build = build_pi_runtime(
+            self.db.as_ref(),
+            listener.server_generation,
+            catalog_epoch,
+            &listener.gateway_origin,
+            token,
+            app_config,
+        )?;
+        let models_path = crate::pi_config::native::get_pi_models_path()?;
+        let native_receipt = if build.projection_patch.is_empty() {
+            if let Some(expected_native) = expected_native {
+                match expected_fingerprints {
+                    Some(expected_fingerprints) => {
+                        crate::pi_config::document::verify_pi_provider_preconditions(
+                            &models_path,
+                            &expected_native.values,
+                            expected_fingerprints,
+                        )?;
+                    }
+                    None => crate::pi_config::document::verify_pi_provider_values(
+                        &models_path,
+                        &expected_native.values,
+                    )?,
+                }
+            }
+            None
+        } else {
+            let expected = match expected_native {
+                Some(expected) => {
+                    crate::pi_config::document::PiProviderValuesSnapshot {
+                        file_existed: expected.file_existed,
+                        values: build
+                            .projection_patch
+                            .keys()
+                            .map(|provider_key| {
+                                expected
+                                    .values
+                                    .get(provider_key)
+                                    .cloned()
+                                    .map(|value| (provider_key.clone(), value))
+                                    .ok_or_else(|| {
+                                        AppError::Config(format!(
+                                            "Pi runtime provider key '{provider_key}' was not included in the catalog preflight"
+                                        ))
+                                    })
+                            })
+                            .collect::<Result<_, _>>()?,
+                    }
+                }
+                None => self.preflight_pi_owned_projection_at(
+                    &models_path,
+                    &build.projection_patch,
+                )?,
+            };
+            Some(
+                crate::pi_config::document::apply_pi_provider_patch_with_receipt_and_fingerprints(
+                    &models_path,
+                    &expected,
+                    expected_fingerprints,
+                    &build.projection_patch,
+                )?,
+            )
+        };
+        if let Err(error) = self.pi_runtime.publish(build.snapshot).await {
+            let rollback = native_receipt.as_ref().map_or(
+                Ok(()),
+                crate::pi_config::document::PiProviderPatchReceipt::rollback,
+            );
+            return Err(AppError::Config(format!(
+                "failed to publish Pi runtime after native projection: {error}; native rollback={rollback:?}"
+            )));
+        }
+        Ok(build.direct_only_provider_ids)
+    }
+
+    /// Re-open a fenced runtime only while Pi's live exact-key projection
+    /// still matches the immutable snapshot which produced that runtime.
+    ///
+    /// Rebuilding this witness from the mutable database or settings would
+    /// turn a failed compensation into stale admission, so the projection is
+    /// retained inside `PiRuntimeSnapshot`.
+    async fn republish_current_pi_runtime_if_native_matches(
+        &self,
+        catalog_epoch: u64,
+    ) -> Result<bool, AppError> {
+        let Some(expected_projection) = self.pi_runtime.retained_native_projection() else {
+            self.pi_runtime.close(catalog_epoch).await?;
+            return Ok(false);
+        };
+        let verification = crate::pi_config::native::get_pi_models_path().and_then(|models_path| {
+            crate::pi_config::document::verify_pi_provider_values(
+                &models_path,
+                &expected_projection,
+            )
+        });
+        if let Err(error) = verification {
+            self.pi_runtime.close(catalog_epoch).await?;
+            return Err(AppError::Conflict(format!(
+                "Pi native projection changed while runtime admission was fenced; admission \
+                 remains closed: {error}"
+            )));
+        }
+        self.pi_runtime.republish_current(catalog_epoch).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_pi_reconcile_for_test(&self) {
+        self.fail_next_pi_reconcile.store(true, Ordering::Release);
+    }
+
+    pub(crate) async fn reconcile_pi_runtime(&self) -> Result<Vec<String>, AppError> {
+        let epoch = self.pi_runtime.begin_mutation().await;
+        self.reconcile_pi_runtime_at_epoch(epoch).await
+    }
+
+    /// Publish a DB-only catalog ordering without closing admission or
+    /// touching the native projection. The caller holds Pi's switch lock and
+    /// must restore the DB order if this preparation fails.
+    pub(crate) async fn publish_pi_runtime_order(&self) -> Result<(), AppError> {
+        if !crate::settings::pi_takeover_enabled() {
+            return Ok(());
+        }
+        let listener = self
+            .pi_listener
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "Pi takeover is desired but the loopback listener is unavailable".to_string(),
+                )
+            })?;
+        let epoch = self.pi_runtime.next_even_epoch()?;
+        let build = build_pi_runtime(
+            self.db.as_ref(),
+            listener.server_generation,
+            epoch,
+            &listener.gateway_origin,
+            crate::settings::get_pi_gateway_token()?,
+            crate::settings::get_pi_app_proxy_config(),
+        )?;
+        self.pi_runtime.publish(build.snapshot).await
+    }
+
+    fn restore_pi_direct_projection_at(
+        &self,
+        models_path: &std::path::Path,
+    ) -> Result<crate::pi_config::document::PiProviderPatchReceipt, AppError> {
+        if self
+            .pi_listener
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none()
+        {
+            return self.confirm_pi_projection_is_already_direct_at(models_path);
+        }
+        let gateway = self.current_pi_gateway_projection()?;
+        self.restore_pi_direct_projection_at_with_expected_gateway(models_path, &gateway)
+    }
+
+    fn confirm_pi_projection_is_already_direct_at(
+        &self,
+        models_path: &std::path::Path,
+    ) -> Result<crate::pi_config::document::PiProviderPatchReceipt, AppError> {
+        let direct = direct_pi_projection_patch(self.db.as_ref())?;
+        let before = crate::pi_config::document::snapshot_pi_provider_values(
+            models_path,
+            direct.keys().cloned(),
+        )?;
+        if let Some(provider_key) = direct.iter().find_map(|(provider_key, expected)| {
+            (before.values.get(provider_key) != Some(expected)).then_some(provider_key)
+        }) {
+            return Err(AppError::Conflict(format!(
+                "Pi listener is unavailable and provider key '{provider_key}' is not already in its direct projection"
+            )));
+        }
+        crate::pi_config::document::apply_pi_provider_patch_with_receipt(
+            models_path,
+            &before,
+            &direct,
+        )
+    }
+
+    fn current_pi_gateway_projection(
+        &self,
+    ) -> Result<indexmap::IndexMap<String, Option<Value>>, AppError> {
+        let listener = self
+            .pi_listener
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "cannot restore Pi direct projection without its active listener identity"
+                        .to_string(),
+                )
+            })?;
+        let gateway_token = crate::settings::get_pi_gateway_token().or_else(|settings_error| {
+            self.pi_runtime
+                .retained_gateway_token(listener.server_generation)
+                .ok_or(settings_error)
+        })?;
+        let gateway = build_pi_runtime(
+            self.db.as_ref(),
+            listener.server_generation,
+            0,
+            &listener.gateway_origin,
+            gateway_token,
+            crate::settings::get_pi_app_proxy_config(),
+        )?
+        .projection_patch;
+        Ok(gateway)
+    }
+
+    fn preflight_pi_owned_projection_at(
+        &self,
+        models_path: &std::path::Path,
+        expected_gateway: &indexmap::IndexMap<String, Option<Value>>,
+    ) -> Result<crate::pi_config::document::PiProviderValuesSnapshot, AppError> {
+        let direct = direct_pi_projection_patch(self.db.as_ref())?;
+        let direct_keys = direct.keys().collect::<std::collections::BTreeSet<_>>();
+        let gateway_keys = expected_gateway
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        if direct_keys != gateway_keys {
+            return Err(AppError::Conflict(
+                "Pi direct and gateway projections cover different exact-key ownership".to_string(),
+            ));
+        }
+        let before = crate::pi_config::document::snapshot_pi_provider_values(
+            models_path,
+            direct.keys().cloned(),
+        )?;
+        for (provider_key, direct_value) in &direct {
+            let observed = before
+                .values
+                .get(provider_key)
+                .expect("every owned key was preflighted");
+            let gateway_value = expected_gateway
+                .get(provider_key)
+                .expect("gateway ownership keys were checked");
+            if observed != direct_value && observed != gateway_value {
+                return Err(AppError::Conflict(format!(
+                    "Pi provider key '{provider_key}' changed outside CC Switch"
+                )));
+            }
+        }
+        Ok(before)
+    }
+
+    fn restore_pi_direct_projection_at_with_expected_gateway(
+        &self,
+        models_path: &std::path::Path,
+        expected_gateway: &indexmap::IndexMap<String, Option<Value>>,
+    ) -> Result<crate::pi_config::document::PiProviderPatchReceipt, AppError> {
+        let direct = direct_pi_projection_patch(self.db.as_ref())?;
+        let before = self.preflight_pi_owned_projection_at(models_path, expected_gateway)?;
+        crate::pi_config::document::apply_pi_provider_patch_with_receipt(
+            models_path,
+            &before,
+            &direct,
+        )
+    }
+
+    fn restore_pi_direct_projection(
+        &self,
+    ) -> Result<crate::pi_config::document::PiProviderPatchReceipt, AppError> {
+        let models_path = crate::pi_config::native::get_pi_models_path()?;
+        self.restore_pi_direct_projection_at(&models_path)
+    }
+
+    /// Replace settings while preserving the ownership boundary when the Pi
+    /// native directory changes. The caller must hold Pi's switch lock from
+    /// the settings snapshot through this call.
+    pub(crate) async fn replace_settings_with_pi_directory_boundary_under_lock(
+        &self,
+        _guard: &tokio::sync::OwnedMutexGuard<()>,
+        existing: &crate::settings::AppSettings,
+        next: crate::settings::AppSettings,
+    ) -> Result<(), AppError> {
+        let old_models_path = crate::pi_config::native::get_pi_models_path_for_override(
+            existing.pi_config_dir.as_deref(),
+        )?;
+        let new_models_path = crate::pi_config::native::get_pi_models_path_for_override(
+            next.pi_config_dir.as_deref(),
+        )?;
+
+        if old_models_path == new_models_path {
+            return crate::settings::update_settings(next);
+        }
+
+        let direct_patch = direct_pi_projection_patch(self.db.as_ref())?;
+        let new_native_before = crate::pi_config::document::snapshot_pi_provider_values(
+            &new_models_path,
+            direct_patch.keys().cloned(),
+        )?;
+        for (provider_key, expected) in &direct_patch {
+            if let Some(existing_value) = new_native_before
+                .values
+                .get(provider_key)
+                .and_then(Option::as_ref)
+            {
+                if Some(existing_value) != expected.as_ref() {
+                    return Err(AppError::Conflict(format!(
+                        "Pi directory change would overwrite unowned provider key '{provider_key}' in {}",
+                        new_models_path.display()
+                    )));
+                }
+            }
+        }
+
+        // Prompt operations and directory ownership share one sendable mutex.
+        // Holding it across runtime publication prevents a prompt write from
+        // committing against the new root while a failed directory move is
+        // rolling settings and the DB selection back to the old root.
+        let prompt_guard = lock_instruction_files_async().await;
+        let previous_prompts = self.db.get_prompts(AppType::Pi.as_str())?;
+
+        if !existing.pi_takeover_enabled {
+            crate::settings::update_settings(next)?;
+            let native_receipt =
+                match crate::pi_config::document::apply_pi_provider_patch_with_receipt(
+                    &new_models_path,
+                    &new_native_before,
+                    &direct_patch,
+                ) {
+                    Ok(receipt) => receipt,
+                    Err(error) => {
+                        let settings_restored =
+                            crate::settings::update_settings(existing.clone()).is_ok();
+                        return Err(AppError::Config(format!(
+                            "failed to publish managed Pi providers in the new directory: {error}; rollback: settings={settings_restored}"
+                )));
+                    }
+                };
+            if let Err(error) =
+                PromptService::reconcile_pi_native_under_guard(self.db.as_ref(), &prompt_guard)
+            {
+                let settings_restored = crate::settings::update_settings(existing.clone()).is_ok();
+                let prompts_restored = self
+                    .db
+                    .save_prompt_selection(AppType::Pi.as_str(), &previous_prompts)
+                    .is_ok();
+                let new_native_restored = native_receipt.rollback().is_ok();
+                return Err(AppError::Config(format!(
+                    "failed to reconcile Pi prompts in the new directory: {error}; rollback: settings={settings_restored}, prompts={prompts_restored}, native={new_native_restored}"
+                )));
+            }
+            if let Err(error) =
+                crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all(&self.db)
+            {
+                let settings_restored = crate::settings::update_settings(existing.clone()).is_ok();
+                let prompts_restored = self
+                    .db
+                    .save_prompt_selection(AppType::Pi.as_str(), &previous_prompts)
+                    .is_ok();
+                let new_native_restored = native_receipt.rollback().is_ok();
+                let skills_restored = settings_restored
+                    && crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all(
+                        &self.db,
+                    )
+                    .is_ok();
+                return Err(AppError::Config(format!(
+                    "failed to reconcile Pi Skills in the new directory: {error}; rollback: settings={settings_restored}, prompts={prompts_restored}, native={new_native_restored}, skills={skills_restored}"
+                )));
+            }
+            return Ok(());
+        }
+
+        // Admission closes before the old native file is restored. A Pi
+        // process that already loaded the old gateway projection therefore
+        // cannot enter a catalog whose directory ownership is in flight.
+        let epoch = self.pi_runtime.begin_mutation().await;
+        let old_direct_receipt = match self.restore_pi_direct_projection_at(&old_models_path) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = self
+                    .republish_current_pi_runtime_if_native_matches(epoch)
+                    .await;
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = crate::settings::update_settings(next) {
+            let expected_old_direct = old_direct_receipt.attempted_snapshot();
+            let runtime_restored = self
+                .reconcile_pi_runtime_at_epoch_with_native_precondition(
+                    epoch,
+                    Some(&expected_old_direct),
+                )
+                .await;
+            return Err(AppError::Config(if runtime_restored.is_ok() {
+                format!(
+                    "failed to save the new Pi directory; the previous gateway projection was restored: {error}"
+                )
+            } else {
+                format!(
+                    "failed to save the new Pi directory and restore the previous gateway projection: {error}"
+                )
+            }));
+        }
+
+        if let Err(error) =
+            PromptService::reconcile_pi_native_under_guard(self.db.as_ref(), &prompt_guard)
+        {
+            let settings_restored = crate::settings::update_settings(existing.clone()).is_ok();
+            let prompts_restored = self
+                .db
+                .save_prompt_selection(AppType::Pi.as_str(), &previous_prompts)
+                .is_ok();
+            let skills_restored = settings_restored
+                && crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all(
+                    &self.db,
+                )
+                .is_ok();
+            let runtime_restored = if settings_restored {
+                let expected_old_direct = old_direct_receipt.attempted_snapshot();
+                self.reconcile_pi_runtime_at_epoch_with_native_precondition(
+                    epoch,
+                    Some(&expected_old_direct),
+                )
+                .await
+                .is_ok()
+            } else {
+                self.republish_current_pi_runtime_if_native_matches(epoch)
+                    .await
+                    .unwrap_or(false)
+            };
+            return Err(AppError::Config(format!(
+                "failed to reconcile Pi prompts in the new directory: {error}; rollback: settings={settings_restored}, prompts={prompts_restored}, skills={skills_restored}, gateway={runtime_restored}"
+            )));
+        }
+
+        if let Err(error) =
+            crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all(&self.db)
+        {
+            let settings_restored = crate::settings::update_settings(existing.clone()).is_ok();
+            let prompts_restored = self
+                .db
+                .save_prompt_selection(AppType::Pi.as_str(), &previous_prompts)
+                .is_ok();
+            let skills_restored = settings_restored
+                && crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all(
+                    &self.db,
+                )
+                .is_ok();
+            let runtime_restored = if settings_restored {
+                let expected_old_direct = old_direct_receipt.attempted_snapshot();
+                self.reconcile_pi_runtime_at_epoch_with_native_precondition(
+                    epoch,
+                    Some(&expected_old_direct),
+                )
+                .await
+                .is_ok()
+            } else {
+                self.republish_current_pi_runtime_if_native_matches(epoch)
+                    .await
+                    .unwrap_or(false)
+            };
+            return Err(AppError::Config(format!(
+                "failed to reconcile Pi Skills in the new directory: {error}; rollback: settings={settings_restored}, prompts={prompts_restored}, skills={skills_restored}, gateway={runtime_restored}"
+            )));
+        }
+
+        if let Err(error) = self
+            .reconcile_pi_runtime_at_epoch_with_native_precondition(epoch, Some(&new_native_before))
+            .await
+        {
+            let settings_restored = crate::settings::update_settings(existing.clone()).is_ok();
+            let prompts_restored = self
+                .db
+                .save_prompt_selection(AppType::Pi.as_str(), &previous_prompts)
+                .is_ok();
+            let skills_restored = settings_restored
+                && crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all(
+                    &self.db,
+                )
+                .is_ok();
+            let old_gateway_restored = if settings_restored {
+                let expected_old_direct = old_direct_receipt.attempted_snapshot();
+                self.reconcile_pi_runtime_at_epoch_with_native_precondition(
+                    epoch,
+                    Some(&expected_old_direct),
+                )
+                .await
+                .is_ok()
+            } else {
+                self.republish_current_pi_runtime_if_native_matches(epoch)
+                    .await
+                    .unwrap_or(false)
+            };
+            return Err(AppError::Config(format!(
+                "failed to publish Pi in the new native directory: {error}; rollback: settings={settings_restored}, prompts={prompts_restored}, skills={skills_restored}, old_gateway={old_gateway_restored}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn suspend_pi_takeover_projection(&self) -> Result<(), AppError> {
+        if !crate::settings::pi_takeover_enabled() {
+            return Ok(());
+        }
+        let epoch = self.pi_runtime.begin_mutation().await;
+        let direct_receipt = match self.restore_pi_direct_projection() {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = self
+                    .republish_current_pi_runtime_if_native_matches(epoch)
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.pi_runtime.close(epoch).await {
+            let expected_direct = direct_receipt.attempted_snapshot();
+            let rollback = self
+                .reconcile_pi_runtime_at_epoch_with_native_precondition(
+                    epoch,
+                    Some(&expected_direct),
+                )
+                .await;
+            return Err(AppError::Config(format!(
+                "failed to close Pi admission after direct projection: {error}; gateway rollback={rollback:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Enter the portable-import boundary while the caller holds Pi's switch
+    /// lock. The old database still exists at this point, so this is the last
+    /// safe moment to restore every managed native key before SQL/binary
+    /// replacement can remove its direct configuration.
+    pub(crate) async fn prepare_pi_portable_import_under_lock(
+        &self,
+        _guard: &tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), AppError> {
+        self.suspend_pi_takeover_projection().await
+    }
+
+    /// Re-publish the old catalog after an import operation aborts. Callers
+    /// retain Pi's switch lock from prepare through this compensation.
+    pub(crate) async fn recover_pi_after_aborted_portable_import_under_lock(
+        &self,
+        _guard: &tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), AppError> {
+        if crate::settings::pi_takeover_enabled() {
+            self.reconcile_pi_runtime().await.map(|_| ())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn suspend_pi_takeover_for_process_exit(&self) -> Result<(), String> {
+        if !crate::settings::pi_takeover_enabled() {
+            return Ok(());
+        }
+        let _guard = self.switch_locks.lock_for_app(AppType::Pi.as_str()).await;
+        self.suspend_pi_takeover_projection()
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to restore Pi's direct native projection before process exit: {error}"
+                )
+            })
+    }
+
+    pub(crate) async fn rotate_pi_gateway_token(&self) -> Result<(), AppError> {
+        let _guard = self.switch_locks.lock_for_app(AppType::Pi.as_str()).await;
+        let previous = crate::settings::get_or_create_pi_gateway_token()?;
+        let takeover_enabled = crate::settings::pi_takeover_enabled();
+        let native_before = if takeover_enabled {
+            let models_path = crate::pi_config::native::get_pi_models_path()?;
+            let gateway = self.current_pi_gateway_projection()?;
+            Some(self.preflight_pi_owned_projection_at(&models_path, &gateway)?)
+        } else {
+            None
+        };
+        crate::settings::reset_pi_gateway_token()?;
+        if !takeover_enabled {
+            return Ok(());
+        }
+        let native_before = native_before.expect("enabled takeover has a native preflight");
+        let epoch = self.pi_runtime.begin_mutation().await;
+        if let Err(error) = self
+            .reconcile_pi_runtime_at_epoch_with_native_precondition(epoch, Some(&native_before))
+            .await
+        {
+            let token_restored = crate::settings::replace_pi_gateway_token(previous);
+            let runtime_restored = if token_restored.is_ok() {
+                let rollback_epoch = self.pi_runtime.begin_mutation().await;
+                self.reconcile_pi_runtime_at_epoch_with_native_precondition(
+                    rollback_epoch,
+                    Some(&native_before),
+                )
+                .await
+            } else {
+                Err(AppError::Config(
+                    "failed to restore the previous Pi gateway credential".to_string(),
+                ))
+            };
+            let rollback = if token_restored.is_ok() && runtime_restored.is_ok() {
+                "the previous credential and runtime were restored"
+            } else {
+                "credential rotation rollback was incomplete"
+            };
+            return Err(AppError::Config(format!(
+                "Pi gateway credential rotation failed: {error}; {rollback}"
+            )));
+        }
+        Ok(())
+    }
+
     /// 启动代理服务器
     pub async fn start(&self) -> Result<ProxyServerInfo, String> {
+        // Listener identity and the Pi runtime/native projection form one
+        // publication boundary. A direct start command must serialize with
+        // provider edits, takeover toggles, and listener reconfiguration just
+        // like every other operation that can replace that identity.
+        let _pi_guard = self.switch_locks.lock_for_app(AppType::Pi.as_str()).await;
+        self.start_with_pi_lock_held().await
+    }
+
+    async fn start_with_pi_lock_held(&self) -> Result<ProxyServerInfo, String> {
         // 1. 启动时自动设置 proxy_enabled = true
         let mut global_config = self
             .db
@@ -563,7 +1341,17 @@ impl ProxyService {
 
         // 4. 创建并启动服务器
         let app_handle = self.app_handle.read().await.clone();
-        let server = ProxyServer::new(config.clone(), self.db.clone(), app_handle);
+        let pi_server_generation = self
+            .pi_server_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let server = ProxyServer::new(
+            config.clone(),
+            self.db.clone(),
+            app_handle,
+            self.pi_runtime.clone(),
+            pi_server_generation,
+        );
         let info = server
             .start()
             .await
@@ -577,7 +1365,40 @@ impl ProxyService {
         }
 
         // 5. 保存服务器实例
+        match pi_loopback_origin(&info.address, info.port) {
+            Ok(gateway_origin) => {
+                *self
+                    .pi_listener
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(PiListenerIdentity {
+                        server_generation: server.pi_server_generation(),
+                        gateway_origin,
+                    });
+            }
+            Err(error) => {
+                *self
+                    .pi_listener
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                log::warn!("Pi gateway admission unavailable: {error}");
+            }
+        }
         *self.server.write().await = Some(server);
+
+        if crate::settings::pi_takeover_enabled() {
+            if let Err(error) = self.reconcile_pi_runtime().await {
+                let rollback = self.suspend_pi_takeover_projection().await;
+                if let Err(rollback_error) = rollback {
+                    return Err(format!(
+                        "Pi desired takeover could not be reconciled after listener start: {error}; direct-mode rollback failed, so the live listener was retained: {rollback_error}"
+                    ));
+                }
+                return Err(format!(
+                    "Pi desired takeover could not be reconciled after listener start; direct mode was restored and the shared listener was retained: {error}"
+                ));
+            }
+        }
 
         log::info!("代理服务器已启动: {}:{}", info.address, info.port);
         Ok(info)
@@ -598,6 +1419,57 @@ impl ProxyService {
             .update_proxy_config(resolved_config)
             .await
             .map_err(|e| format!("保存动态代理端口失败: {e}"))
+    }
+
+    async fn restore_proxy_config_snapshot(&self, config: &ProxyConfig) -> Result<(), String> {
+        self.db
+            .update_proxy_config(config.clone())
+            .await
+            .map_err(|error| format!("恢复原代理配置失败: {error}"))
+    }
+
+    fn replace_pi_listener_identity(&self, server: &ProxyServer, info: &ProxyServerInfo) {
+        *self
+            .pi_listener
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            pi_loopback_origin(&info.address, info.port)
+                .ok()
+                .map(|gateway_origin| PiListenerIdentity {
+                    server_generation: server.pi_server_generation(),
+                    gateway_origin,
+                });
+    }
+
+    async fn recover_previous_listener(
+        &self,
+        previous_server: Option<ProxyServer>,
+        previous_config: &ProxyConfig,
+    ) -> Result<(), String> {
+        let server = previous_server.ok_or_else(|| "原代理监听器实例不可用".to_string())?;
+        let info = server
+            .start()
+            .await
+            .map_err(|error| format!("恢复原代理监听器失败: {error}"))?;
+
+        let mut recovered_config = previous_config.clone();
+        recovered_config.listen_port = info.port;
+        if let Err(error) = self.restore_proxy_config_snapshot(&recovered_config).await {
+            let _ = server.stop().await;
+            return Err(error);
+        }
+
+        self.replace_pi_listener_identity(&server, &info);
+        *self.server.write().await = Some(server);
+        if crate::settings::pi_takeover_enabled() {
+            if let Err(error) = self.reconcile_pi_runtime().await {
+                let direct_rollback = self.suspend_pi_takeover_projection().await;
+                return Err(format!(
+                    "原监听器已恢复，但 Pi 网关重建失败: {error}; 直连回滚: {direct_rollback:?}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     async fn start_before_takeover_if_ephemeral_port(&self) -> Result<bool, String> {
@@ -724,6 +1596,24 @@ impl ProxyService {
         // OpenCode and OpenClaw don't support proxy features, always return false
         let opencode_enabled = false;
         let openclaw_enabled = false;
+        let pi_enabled = crate::settings::pi_takeover_enabled();
+        let pi_operational_state = if !pi_enabled {
+            PiTakeoverOperationalState::Disabled
+        } else {
+            let listener = self
+                .pi_listener
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if listener
+                .as_ref()
+                .is_some_and(|listener| self.pi_runtime.is_admitting(listener.server_generation))
+            {
+                PiTakeoverOperationalState::Active
+            } else {
+                PiTakeoverOperationalState::Degraded
+            }
+        };
 
         Ok(ProxyTakeoverStatus {
             claude: claude_enabled,
@@ -732,6 +1622,8 @@ impl ProxyService {
             grokbuild: grokbuild_enabled,
             opencode: opencode_enabled,
             openclaw: openclaw_enabled,
+            pi: pi_enabled,
+            pi_operational_state,
         })
     }
 
@@ -743,6 +1635,9 @@ impl ProxyService {
         let app = AppType::from_str(app_type).map_err(|e| format!("无效的应用类型: {e}"))?;
         let app_type_str = app.as_str();
         let _guard = self.switch_locks.lock_for_app(app_type_str).await;
+        if app == AppType::Pi {
+            return self.set_pi_takeover_locked(enabled).await;
+        }
 
         if enabled {
             // 1) 代理服务未运行则自动启动
@@ -922,6 +1817,136 @@ impl ProxyService {
             }
         }
 
+        Ok(())
+    }
+
+    async fn set_pi_takeover_locked(&self, enabled: bool) -> Result<(), String> {
+        if enabled {
+            let was_enabled = crate::settings::pi_takeover_enabled();
+            if !was_enabled {
+                // Desired intent is durable before bind/token/projection work.
+                // Operational failures remain retryable on the next startup.
+                crate::settings::set_pi_takeover_enabled(true)
+                    .map_err(|error| error.to_string())?;
+            }
+            if !self.is_running().await {
+                self.start_with_pi_lock_held().await?;
+            }
+            if self
+                .pi_listener
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+            {
+                let epoch = self.pi_runtime.begin_mutation().await;
+                let _ = self.pi_runtime.close(epoch).await;
+                return Err(
+                    "Pi gateway requires the proxy listener to bind an explicit loopback address"
+                        .to_string(),
+                );
+            }
+            // Token creation is stable and occurs only after a listener exists.
+            if let Err(error) = crate::settings::get_or_create_pi_gateway_token() {
+                if !was_enabled {
+                    let epoch = self.pi_runtime.begin_mutation().await;
+                    let _ = self.pi_runtime.close(epoch).await;
+                }
+                return Err(error.to_string());
+            }
+
+            if let Err(error) = self.reconcile_pi_runtime().await {
+                if was_enabled {
+                    let epoch = self.pi_runtime.begin_mutation().await;
+                    let restored = self
+                        .republish_current_pi_runtime_if_native_matches(epoch)
+                        .await;
+                    return Err(if matches!(restored, Ok(true)) {
+                        format!(
+                            "failed to refresh Pi gateway catalog; the previous runtime remains active: {error}"
+                        )
+                    } else {
+                        format!(
+                            "failed to refresh Pi gateway catalog and restore admission: {error}"
+                        )
+                    });
+                }
+
+                let direct_projection = self.restore_pi_direct_projection();
+                match direct_projection {
+                    Ok(_) => {
+                        let epoch = self.pi_runtime.begin_mutation().await;
+                        let admission_closed = self.pi_runtime.close(epoch).await;
+                        return Err(if admission_closed.is_ok() {
+                            format!(
+                                "failed to publish Pi gateway catalog; direct mode was restored and desired takeover remains pending: {error}"
+                            )
+                        } else {
+                            format!(
+                                "failed to publish Pi gateway catalog and close Pi admission: {error}"
+                            )
+                        });
+                    }
+                    Err(restore_error) => {
+                        // Keep the desired bit true when restoring the native
+                        // direct projection itself failed. Startup
+                        // reconciliation can retry, and the error remains
+                        // explicit instead of claiming a successful rollback
+                        // while models.json still points local.
+                        let epoch = self.pi_runtime.begin_mutation().await;
+                        let _ = self.pi_runtime.close(epoch).await;
+                        return Err(format!(
+                            "failed to publish Pi gateway catalog: {error}; failed to restore the native direct projection: {restore_error}"
+                        ));
+                    }
+                }
+            }
+            self.refresh_active_target_from_current_provider(&AppType::Pi)
+                .await;
+            return Ok(());
+        }
+
+        if !crate::settings::pi_takeover_enabled() {
+            return Ok(());
+        }
+        let epoch = self.pi_runtime.begin_mutation().await;
+        let direct_receipt = match self.restore_pi_direct_projection() {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = self
+                    .republish_current_pi_runtime_if_native_matches(epoch)
+                    .await;
+                return Err(format!(
+                    "failed to restore Pi's direct native projection: {error}"
+                ));
+            }
+        };
+        if let Err(error) = crate::settings::set_pi_takeover_enabled(false) {
+            // Desired state did not change; rebuild the gateway projection and
+            // restore admission so the native file cannot be left lying.
+            let expected_direct = direct_receipt.attempted_snapshot();
+            let _ = self
+                .reconcile_pi_runtime_at_epoch_with_native_precondition(
+                    epoch,
+                    Some(&expected_direct),
+                )
+                .await;
+            return Err(format!("failed to persist Pi takeover disable: {error}"));
+        }
+
+        self.pi_runtime
+            .close(epoch)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let status = self.get_takeover_status().await?;
+        if !status.claude
+            && !status.codex
+            && !status.gemini
+            && !status.grokbuild
+            && self.is_running().await
+        {
+            let _ = self.stop().await;
+        }
         Ok(())
     }
 
@@ -1293,7 +2318,36 @@ impl ProxyService {
 
     /// 停止代理服务器
     pub async fn stop(&self) -> Result<(), String> {
+        // `stop()` has several internal callers (profile switching included)
+        // that do not pass through the public takeover command. Never leave
+        // models.json pointing at a listener that this call is about to stop.
+        // The desired bit remains true so a later start can republish a fresh
+        // listener identity.
+        let _pi_guard = if crate::settings::pi_takeover_enabled() {
+            Some(self.switch_locks.lock_for_app(AppType::Pi.as_str()).await)
+        } else {
+            None
+        };
+        if crate::settings::pi_takeover_enabled() {
+            self.suspend_pi_takeover_projection()
+                .await
+                .map_err(|error| {
+                    format!(
+                        "refusing to stop the proxy while Pi's direct projection cannot be restored: {error}"
+                    )
+                })?;
+        }
+        self.stop_listener_only().await
+    }
+
+    async fn stop_listener_only(&self) -> Result<(), String> {
         if let Some(server) = self.server.write().await.take() {
+            let terminal_epoch = self.pi_runtime.begin_mutation().await;
+            let _ = self.pi_runtime.close(terminal_epoch).await;
+            *self
+                .pi_listener
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             server
                 .stop()
                 .await
@@ -1324,8 +2378,12 @@ impl ProxyService {
     ///
     /// 会清除 settings 表中的代理状态，下次启动不会自动恢复。
     pub async fn stop_with_restore(&self) -> Result<(), String> {
+        if crate::settings::pi_takeover_enabled() {
+            self.set_takeover_for_app(AppType::Pi.as_str(), false)
+                .await?;
+        }
         // 1. 停止代理服务器（即使未运行也继续执行恢复逻辑）
-        if let Err(e) = self.stop().await {
+        if let Err(e) = self.stop_listener_only().await {
             log::warn!("停止代理服务器失败（将继续恢复 Live 配置）: {e}");
         }
 
@@ -1371,8 +2429,14 @@ impl ProxyService {
     ///
     /// 用于程序正常退出时，保留代理状态以便下次启动时自动恢复
     pub async fn stop_with_restore_keep_state(&self) -> Result<(), String> {
+        // Pi's gateway projection lives in models.json rather than the legacy
+        // Live-backup table. Restore its direct exact-key projection while the
+        // listener is still alive, but retain the desired bit so startup can
+        // publish a fresh gateway projection.
+        self.suspend_pi_takeover_for_process_exit().await?;
+
         // 1. 停止代理服务器（即使未运行也继续执行恢复逻辑）
-        if let Err(e) = self.stop().await {
+        if let Err(e) = self.stop_listener_only().await {
             log::warn!("停止代理服务器失败（将继续恢复 Live 配置）: {e}");
         }
 
@@ -2206,7 +3270,7 @@ impl ProxyService {
     /// 检查是否处于 Live 接管模式
     pub async fn is_takeover_active(&self) -> Result<bool, String> {
         let status = self.get_takeover_status().await?;
-        Ok(status.claude || status.codex || status.gemini || status.grokbuild)
+        Ok(status.claude || status.codex || status.gemini || status.grokbuild || status.pi)
     }
 
     /// 从异常退出中恢复（启动时调用）
@@ -3099,6 +4163,11 @@ impl ProxyService {
 
     /// 更新代理配置
     pub async fn update_config(&self, config: &ProxyConfig) -> Result<(), String> {
+        // Listener identity is part of Pi's native projection contract.
+        // Serialize address changes with every Pi catalog/takeover mutation so
+        // models.json can never race from one listener generation to another.
+        let _pi_guard = self.switch_locks.lock_for_app(AppType::Pi.as_str()).await;
+
         // 记录旧配置用于判定是否需要重启
         let previous = self
             .db
@@ -3126,28 +4195,84 @@ impl ProxyService {
             || new_config.listen_port != previous.listen_port;
 
         if require_restart {
-            if let Some(server) = server_guard.take() {
-                server
-                    .stop()
-                    .await
-                    .map_err(|e| format!("重启前停止代理服务器失败: {e}"))?;
+            // A listener restart first returns Pi to its direct, pinned-native
+            // representation while the old listener is still reachable. The
+            // desired bit is retained and a fresh gateway projection is only
+            // published after the new listener identity is known.
+            if let Err(error) = self.suspend_pi_takeover_projection().await {
+                let config_rollback = self.restore_proxy_config_snapshot(&previous).await;
+                return Err(format!(
+                    "重启代理前恢复 Pi 直连投影失败: {error}; 配置回滚: {config_rollback:?}"
+                ));
             }
 
+            let previous_server = server_guard.take();
+            if let Some(server) = previous_server.as_ref() {
+                if let Err(error) = server.stop().await {
+                    *self
+                        .pi_listener
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                    drop(server_guard);
+                    let recovery = self
+                        .recover_previous_listener(previous_server, &previous)
+                        .await;
+                    return Err(format!(
+                        "重启前停止代理服务器失败: {error}; Pi 已恢复直连，原监听器恢复: {recovery:?}"
+                    ));
+                }
+            }
+            *self
+                .pi_listener
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
             let app_handle = self.app_handle.read().await.clone();
-            let new_server = ProxyServer::new(new_config.clone(), self.db.clone(), app_handle);
-            let info = new_server
-                .start()
-                .await
-                .map_err(|e| format!("重启代理服务器失败: {e}"))?;
+            let pi_server_generation = self
+                .pi_server_sequence
+                .fetch_add(1, Ordering::AcqRel)
+                .saturating_add(1);
+            let new_server = ProxyServer::new(
+                new_config.clone(),
+                self.db.clone(),
+                app_handle,
+                self.pi_runtime.clone(),
+                pi_server_generation,
+            );
+            let info = match new_server.start().await {
+                Ok(info) => info,
+                Err(error) => {
+                    drop(server_guard);
+                    let recovery = self
+                        .recover_previous_listener(previous_server, &previous)
+                        .await;
+                    return Err(format!(
+                        "重启代理服务器失败: {error}; 原监听器恢复: {recovery:?}"
+                    ));
+                }
+            };
             if let Err(e) = self
                 .persist_ephemeral_listen_port_if_needed(&new_config, info.port)
                 .await
             {
                 let _ = new_server.stop().await;
-                return Err(e);
+                drop(server_guard);
+                let recovery = self
+                    .recover_previous_listener(previous_server, &previous)
+                    .await;
+                return Err(format!("{e}; 原监听器恢复: {recovery:?}"));
             }
 
+            self.replace_pi_listener_identity(&new_server, &info);
             *server_guard = Some(new_server);
+            if crate::settings::pi_takeover_enabled() {
+                if let Err(error) = self.reconcile_pi_runtime().await {
+                    let direct_rollback = self.suspend_pi_takeover_projection().await;
+                    return Err(format!(
+                        "重建 Pi 网关运行时失败: {error}; 新监听器保持运行，Pi 直连回滚: {direct_rollback:?}"
+                    ));
+                }
+            }
             log::info!("代理配置已更新，服务器已自动重启应用最新配置");
 
             // 如果当前存在任意 app 的 Live 接管，需要同步更新 Live 中的代理地址（否则客户端仍指向旧端口）
@@ -3249,7 +4374,9 @@ impl ProxyService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::ProviderMeta;
+    use crate::database::NewProviderAggregate;
+    use crate::provider::{ProviderMeta, ProviderMutationInput};
+    use crate::AppState;
     use serial_test::serial;
     use std::env;
     use tempfile::TempDir;
@@ -3298,6 +4425,10 @@ mod tests {
                 Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
                 None => env::remove_var("CC_SWITCH_TEST_HOME"),
             }
+            // Tests mutate the process-global settings cache after redirecting
+            // the home directory. Restore the cache after the environment so
+            // later serial tests do not inherit a dead temporary Pi override.
+            let _ = crate::settings::reload_settings();
         }
     }
 
@@ -3316,6 +4447,997 @@ mod tests {
     async fn running_codex_base_url(service: &ProxyService) -> String {
         let status = service.get_status().await.expect("get proxy status");
         format!("http://127.0.0.1:{}/v1", status.port)
+    }
+
+    #[test]
+    fn process_exit_projection_restores_claimed_pi_values_and_preserves_unowned_values() {
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        let config = serde_json::json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        let input = ProviderMutationInput {
+            id: "managed-pi".to_string(),
+            name: "Managed Pi".to_string(),
+            settings_config: config.clone(),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: Some(0),
+            notes: None,
+            meta: None,
+            icon: Some("pi".to_string()),
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input("pi", input).expect("build aggregate"),
+            "managed-pi",
+        )
+        .expect("seed managed Pi provider");
+        let state = AppState::new(db);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("models.json");
+        let unowned = serde_json::json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://native.example",
+            "apiKey": "native-key",
+            "models": [{"id": "native-model"}]
+        });
+        let expected_gateway = serde_json::json!({
+            "api": "openai-responses",
+            "baseUrl": "http://127.0.0.1:15721/pi/route",
+            "apiKey": "gateway-token",
+            "models": [{"id": "model-a"}]
+        });
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "providers": {
+                    "managed-pi": expected_gateway.clone(),
+                    "native": unowned.clone()
+                }
+            }))
+            .expect("serialize gateway projection"),
+        )
+        .expect("write gateway projection");
+
+        state
+            .proxy_service
+            .restore_pi_direct_projection_at_with_expected_gateway(
+                &path,
+                &indexmap::IndexMap::from([("managed-pi".to_string(), Some(expected_gateway))]),
+            )
+            .expect("restore direct Pi projection");
+
+        let restored: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read restored Pi catalog"))
+                .expect("parse restored Pi catalog");
+        assert_eq!(restored.pointer("/providers/managed-pi"), Some(&config));
+        assert_eq!(restored.pointer("/providers/native"), Some(&unowned));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn changing_pi_directory_moves_gateway_ownership_and_restores_the_old_file() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let old_dir = home.dir.path().join("old-pi");
+        let new_dir = home.dir.path().join("new-pi");
+        std::fs::create_dir_all(&old_dir).expect("old Pi directory");
+        std::fs::create_dir_all(&new_dir).expect("new Pi directory");
+        std::fs::write(old_dir.join("AGENTS.md"), "old-root-agents").expect("old Pi AGENTS.md");
+        std::fs::write(new_dir.join("AGENTS.md"), "new-root-agents").expect("new Pi AGENTS.md");
+
+        let direct = json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        for directory in [&old_dir, &new_dir] {
+            std::fs::write(
+                directory.join("models.json"),
+                serde_json::to_vec_pretty(&json!({
+                    "providers": {"managed-pi": direct.clone()}
+                }))
+                .expect("serialize Pi models"),
+            )
+            .expect("seed Pi models");
+        }
+
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(old_dir.to_string_lossy().into_owned());
+        crate::settings::update_settings(settings).expect("set old Pi directory");
+
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        let skill_source = crate::services::skill::SkillService::get_ssot_dir()
+            .expect("SSOT")
+            .join("directory-move");
+        std::fs::create_dir_all(&skill_source).expect("skill source");
+        std::fs::write(
+            skill_source.join("SKILL.md"),
+            "---\nname: directory-move\ndescription: directory move\n---\n",
+        )
+        .expect("skill manifest");
+        db.save_skill(&crate::app_config::InstalledSkill {
+            id: "local:directory-move".to_string(),
+            name: "Directory move".to_string(),
+            description: Some("directory move".to_string()),
+            directory: "directory-move".to_string(),
+            repo_owner: None,
+            repo_name: None,
+            repo_branch: None,
+            readme_url: None,
+            apps: crate::app_config::SkillApps::only(&AppType::Pi),
+            installed_at: 1,
+            content_hash: None,
+            updated_at: 1,
+        })
+        .expect("save skill");
+        crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all(&db)
+            .expect("deploy skill in old root");
+        assert!(old_dir.join("skills").join("directory-move").exists());
+        db.save_prompt(
+            AppType::Pi.as_str(),
+            &crate::prompt::Prompt {
+                id: "old-root".to_string(),
+                name: "Old root".to_string(),
+                content: "old-root-agents".to_string(),
+                description: None,
+                enabled: true,
+                created_at: Some(1),
+                updated_at: Some(1),
+            },
+        )
+        .expect("old prompt");
+        db.save_prompt(
+            AppType::Pi.as_str(),
+            &crate::prompt::Prompt {
+                id: "new-root".to_string(),
+                name: "New root".to_string(),
+                content: "new-root-agents".to_string(),
+                description: None,
+                enabled: false,
+                created_at: Some(2),
+                updated_at: Some(2),
+            },
+        )
+        .expect("new prompt");
+        use_ephemeral_proxy_port(&db).await;
+        let input = ProviderMutationInput {
+            id: "managed-pi".to_string(),
+            name: "Managed Pi".to_string(),
+            settings_config: direct.clone(),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: Some(0),
+            notes: None,
+            meta: None,
+            icon: Some("pi".to_string()),
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input("pi", input).expect("aggregate"),
+            "managed-pi",
+        )
+        .expect("seed Pi catalog");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .set_takeover_for_app("pi", true)
+            .await
+            .expect("enable Pi takeover");
+
+        let guard = service.lock_switch_for_app("pi").await;
+        let existing = crate::settings::get_settings();
+        let mut next = existing.clone();
+        next.pi_config_dir = Some(new_dir.to_string_lossy().into_owned());
+        service
+            .replace_settings_with_pi_directory_boundary_under_lock(&guard, &existing, next)
+            .await
+            .expect("move Pi directory ownership");
+        drop(guard);
+
+        let old_document: Value = serde_json::from_slice(
+            &std::fs::read(old_dir.join("models.json")).expect("read old Pi models"),
+        )
+        .expect("parse old Pi models");
+        assert_eq!(
+            old_document.pointer("/providers/managed-pi"),
+            Some(&direct),
+            "the old native directory must be restored to direct Pi semantics"
+        );
+
+        let new_document: Value = serde_json::from_slice(
+            &std::fs::read(new_dir.join("models.json")).expect("read new Pi models"),
+        )
+        .expect("parse new Pi models");
+        let new_base_url = new_document
+            .pointer("/providers/managed-pi/baseUrl")
+            .and_then(Value::as_str)
+            .expect("new gateway base URL");
+        let new_base_url = url::Url::parse(new_base_url).expect("parse new gateway base URL");
+        assert_eq!(new_base_url.host_str(), Some("127.0.0.1"));
+        assert!(new_base_url.path().starts_with("/pi/"));
+        assert_eq!(
+            crate::settings::get_settings().pi_config_dir.as_deref(),
+            Some(new_dir.to_string_lossy().as_ref())
+        );
+        let prompts = db.get_prompts(AppType::Pi.as_str()).expect("Pi prompts");
+        assert!(!prompts["old-root"].enabled);
+        assert!(prompts["new-root"].enabled);
+        assert_eq!(
+            std::fs::read_to_string(old_dir.join("AGENTS.md")).expect("old AGENTS"),
+            "old-root-agents",
+            "directory changes must not migrate or clean the old native file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(new_dir.join("AGENTS.md")).expect("new AGENTS"),
+            "new-root-agents"
+        );
+        assert!(
+            !old_dir.join("skills").join("directory-move").exists(),
+            "verified stale Skill ownership must be cleaned after new deployment"
+        );
+        assert!(new_dir.join("skills").join("directory-move").exists());
+        let deployments = db
+            .get_pi_skill_deployments("local:directory-move")
+            .expect("skill deployments");
+        assert_eq!(deployments.len(), 1);
+        assert!(deployments[0]
+            .destination
+            .contains(new_dir.to_string_lossy().as_ref()));
+
+        service
+            .set_takeover_for_app("pi", false)
+            .await
+            .expect("disable Pi takeover");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn changing_pi_directory_rejects_an_unowned_managed_key_before_side_effects() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let old_dir = home.dir.path().join("old-pi");
+        let new_dir = home.dir.path().join("new-pi");
+        std::fs::create_dir_all(&old_dir).expect("old Pi directory");
+        std::fs::create_dir_all(&new_dir).expect("new Pi directory");
+
+        let managed = json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        let foreign = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://foreign.example",
+            "apiKey": "foreign-secret",
+            "models": [{"id": "foreign-model"}]
+        });
+        let foreign_document = serde_json::to_vec_pretty(&json!({
+            "providers": {"managed-pi": foreign}
+        }))
+        .expect("foreign models");
+        std::fs::write(new_dir.join("models.json"), &foreign_document).expect("seed foreign key");
+
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(old_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings).expect("old Pi settings");
+        let db = Arc::new(Database::memory().expect("database"));
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(
+                AppType::Pi.as_str(),
+                ProviderMutationInput {
+                    id: "managed-pi".to_string(),
+                    name: "Managed Pi".to_string(),
+                    settings_config: managed,
+                    website_url: None,
+                    category: None,
+                    created_at: None,
+                    sort_index: Some(0),
+                    notes: None,
+                    meta: None,
+                    icon: Some("pi".to_string()),
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            )
+            .expect("aggregate"),
+            "managed-pi",
+        )
+        .expect("managed provider");
+
+        let service = ProxyService::new(db);
+        let switch_guard = service.lock_switch_for_app(AppType::Pi.as_str()).await;
+        let existing = crate::settings::get_settings();
+        let mut next = existing.clone();
+        next.pi_config_dir = Some(new_dir.to_string_lossy().into_owned());
+        let error = service
+            .replace_settings_with_pi_directory_boundary_under_lock(&switch_guard, &existing, next)
+            .await
+            .expect_err("unowned target key must reject the directory move");
+        assert!(error.to_string().contains("overwrite unowned provider key"));
+        assert_eq!(
+            crate::settings::get_settings().pi_config_dir,
+            existing.pi_config_dir,
+            "preflight rejection must not switch the native authority"
+        );
+        assert_eq!(
+            std::fs::read(new_dir.join("models.json")).expect("foreign models remain"),
+            foreign_document
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn changing_pi_directory_does_not_overwrite_an_exact_key_changed_after_preflight() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let old_dir = home.dir.path().join("old-pi");
+        let new_dir = home.dir.path().join("new-pi");
+        std::fs::create_dir_all(&old_dir).expect("old Pi directory");
+        std::fs::create_dir_all(&new_dir).expect("new Pi directory");
+
+        let direct = json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        let external = json!({
+            "name": "External Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://external.example/v1",
+            "apiKey": "external-key",
+            "models": [{"id": "external-model", "name": "External"}]
+        });
+        let new_models_path = new_dir.join("models.json");
+        std::fs::write(
+            &new_models_path,
+            serde_json::to_vec(&json!({"providers": {}})).expect("serialize direct document"),
+        )
+        .expect("seed direct document");
+
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(old_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings).expect("old Pi settings");
+        let db = Arc::new(Database::memory().expect("database"));
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(
+                AppType::Pi.as_str(),
+                ProviderMutationInput {
+                    id: "managed-pi".to_string(),
+                    name: "Managed Pi".to_string(),
+                    settings_config: direct,
+                    website_url: None,
+                    category: None,
+                    created_at: None,
+                    sort_index: Some(0),
+                    notes: None,
+                    meta: None,
+                    icon: Some("pi".to_string()),
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            )
+            .expect("aggregate"),
+            "managed-pi",
+        )
+        .expect("managed provider");
+        crate::pi_config::shared_file::replace_before_next_compare_exchange(
+            &new_models_path,
+            &serde_json::to_vec(&json!({"providers": {"managed-pi": external.clone()}}))
+                .expect("serialize external document"),
+        );
+
+        let service = ProxyService::new(db);
+        let switch_guard = service.lock_switch_for_app(AppType::Pi.as_str()).await;
+        let existing = crate::settings::get_settings();
+        let mut next = existing.clone();
+        next.pi_config_dir = Some(new_dir.to_string_lossy().into_owned());
+        let error = service
+            .replace_settings_with_pi_directory_boundary_under_lock(&switch_guard, &existing, next)
+            .await
+            .expect_err("the post-preflight native edit must win");
+        assert!(error.to_string().contains("changed since"));
+        assert_eq!(
+            crate::settings::get_settings().pi_config_dir,
+            existing.pi_config_dir
+        );
+        let live: Value = serde_json::from_slice(
+            &std::fs::read(&new_models_path).expect("read external native document"),
+        )
+        .expect("parse external native document");
+        assert_eq!(live.pointer("/providers/managed-pi"), Some(&external));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn changing_pi_directory_without_takeover_reconciles_missing_agents_truth() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let old_dir = home.dir.path().join("old-direct-pi");
+        let new_dir = home.dir.path().join("new-direct-pi");
+        std::fs::create_dir_all(&old_dir).expect("old Pi directory");
+        std::fs::create_dir_all(&new_dir).expect("new Pi directory");
+        std::fs::write(old_dir.join("AGENTS.md"), "old-only").expect("old AGENTS");
+
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(old_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings).expect("old directory settings");
+
+        let db = Arc::new(Database::memory().expect("database"));
+        let direct = json!({
+            "name": "Managed direct Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://direct.example/v1",
+            "apiKey": "direct-key",
+            "models": [{"id": "direct-model", "name": "Direct model"}]
+        });
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(
+                AppType::Pi.as_str(),
+                ProviderMutationInput {
+                    id: "managed-direct".to_string(),
+                    name: "Managed direct Pi".to_string(),
+                    settings_config: direct.clone(),
+                    website_url: None,
+                    category: None,
+                    created_at: None,
+                    sort_index: Some(0),
+                    notes: None,
+                    meta: None,
+                    icon: Some("pi".to_string()),
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            )
+            .expect("aggregate"),
+            "managed-direct",
+        )
+        .expect("managed direct provider");
+        db.save_prompt(
+            AppType::Pi.as_str(),
+            &crate::prompt::Prompt {
+                id: "old-only".to_string(),
+                name: "Old only".to_string(),
+                content: "old-only".to_string(),
+                description: None,
+                enabled: true,
+                created_at: Some(1),
+                updated_at: Some(1),
+            },
+        )
+        .expect("prompt");
+        let service = ProxyService::new(db.clone());
+        let switch_guard = service.lock_switch_for_app(AppType::Pi.as_str()).await;
+        let existing = crate::settings::get_settings();
+        let mut next = existing.clone();
+        next.pi_config_dir = Some(new_dir.to_string_lossy().into_owned());
+        service
+            .replace_settings_with_pi_directory_boundary_under_lock(&switch_guard, &existing, next)
+            .await
+            .expect("change direct Pi directory");
+
+        assert!(
+            db.get_prompts(AppType::Pi.as_str())
+                .expect("prompts")
+                .values()
+                .all(|prompt| !prompt.enabled),
+            "a missing AGENTS.md in the new root is the inactive authority"
+        );
+        assert_eq!(
+            std::fs::read_to_string(old_dir.join("AGENTS.md")).expect("old AGENTS survives"),
+            "old-only"
+        );
+        assert!(!new_dir.join("AGENTS.md").exists());
+        let new_models: Value = serde_json::from_slice(
+            &std::fs::read(new_dir.join("models.json")).expect("new direct models"),
+        )
+        .expect("parse new direct models");
+        assert_eq!(
+            new_models.pointer("/providers/managed-direct"),
+            Some(&direct),
+            "a direct-mode directory change must publish every managed provider in the new root"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn pi_gateway_returns_the_last_real_retryable_upstream_response_when_no_later_send_occurs(
+    ) {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let pi_dir = home.dir.path().join("pi");
+        std::fs::create_dir_all(&pi_dir).expect("Pi directory");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(pi_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings).expect("Pi settings");
+
+        let upstream_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits = upstream_hits.clone();
+        let upstream = axum::Router::new().fallback(axum::routing::any(move || {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut response = axum::response::Response::builder()
+                    .status(http::StatusCode::TOO_MANY_REQUESTS)
+                    .header("x-upstream-marker", "real-429")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"error":{"message":"upstream rate limit"}}"#,
+                    ))
+                    .expect("upstream response");
+                response
+                    .headers_mut()
+                    .insert("retry-after", http::HeaderValue::from_static("17"));
+                response
+            }
+        }));
+        let upstream_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("upstream listener");
+        let upstream_address = upstream_listener.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            axum::serve(upstream_listener, upstream)
+                .await
+                .expect("upstream server");
+        });
+
+        let db = Arc::new(Database::memory().expect("database"));
+        use_ephemeral_proxy_port(&db).await;
+        let direct = json!({
+            "name": "Retryable upstream",
+            "api": "openai-responses",
+            "baseUrl": format!("http://{upstream_address}/v1"),
+            "apiKey": "upstream-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(
+                AppType::Pi.as_str(),
+                ProviderMutationInput {
+                    id: "retryable-upstream".to_string(),
+                    name: "Retryable upstream".to_string(),
+                    settings_config: direct.clone(),
+                    website_url: None,
+                    category: None,
+                    created_at: None,
+                    sort_index: Some(0),
+                    notes: None,
+                    meta: None,
+                    icon: Some("pi".to_string()),
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            )
+            .expect("aggregate"),
+            "retryable-upstream",
+        )
+        .expect("managed provider");
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec(&json!({
+                "providers": {"retryable-upstream": direct}
+            }))
+            .expect("serialize native catalog"),
+        )
+        .expect("native catalog");
+
+        let service = ProxyService::new(db);
+        service
+            .set_takeover_for_app(AppType::Pi.as_str(), true)
+            .await
+            .expect("enable Pi gateway");
+        let projected: Value = serde_json::from_slice(
+            &std::fs::read(pi_dir.join("models.json")).expect("projected catalog"),
+        )
+        .expect("parse projected catalog");
+        let base_url = projected
+            .pointer("/providers/retryable-upstream/baseUrl")
+            .and_then(Value::as_str)
+            .expect("gateway base URL");
+        let gateway_token = projected
+            .pointer("/providers/retryable-upstream/apiKey")
+            .and_then(Value::as_str)
+            .expect("gateway token");
+
+        let response = reqwest::Client::new()
+            .post(format!("{base_url}/responses"))
+            .bearer_auth(gateway_token)
+            .json(&json!({"model": "model-a", "input": "hello"}))
+            .send()
+            .await
+            .expect("gateway response");
+        let status = response.status();
+        let marker = response
+            .headers()
+            .get("x-upstream-marker")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.text().await.expect("upstream body");
+        upstream_task.abort();
+
+        assert_eq!(status, reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(marker.as_deref(), Some("real-429"));
+        assert_eq!(retry_after.as_deref(), Some("17"));
+        assert_eq!(body, r#"{"error":{"message":"upstream rate limit"}}"#);
+        assert_eq!(
+            upstream_hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "local candidate exhaustion must not invent a phantom retry"
+        );
+        service
+            .set_takeover_for_app(AppType::Pi.as_str(), false)
+            .await
+            .expect("disable Pi gateway");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn failed_listener_rebind_recovers_pi_on_the_previous_listener() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(
+            crate::config::get_home_dir()
+                .join(".pi/agent")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        crate::settings::update_settings(settings).expect("set Pi directory");
+
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        use_ephemeral_proxy_port(&db).await;
+        let config = json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        let input = ProviderMutationInput {
+            id: "managed-pi".to_string(),
+            name: "Managed Pi".to_string(),
+            settings_config: config.clone(),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: Some(0),
+            notes: None,
+            meta: None,
+            icon: Some("pi".to_string()),
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input("pi", input).expect("aggregate"),
+            "managed-pi",
+        )
+        .expect("seed Pi catalog");
+        let models_path = crate::pi_config::native::get_pi_models_path().expect("models path");
+        std::fs::create_dir_all(models_path.parent().expect("Pi directory")).expect("Pi directory");
+        std::fs::write(
+            &models_path,
+            serde_json::to_vec_pretty(&json!({"providers": {"managed-pi": config}}))
+                .expect("serialize models"),
+        )
+        .expect("write models");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .set_takeover_for_app("pi", true)
+            .await
+            .expect("enable Pi takeover");
+        let occupied = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("reserve conflicting port");
+        let mut rejected = db.get_proxy_config().await.expect("proxy config");
+        rejected.listen_port = occupied.local_addr().expect("reserved address").port();
+        assert!(service.update_config(&rejected).await.is_err());
+
+        let status = service.get_status().await.expect("recovered status");
+        assert!(status.running);
+        let stored = db.get_proxy_config().await.expect("recovered config");
+        assert_eq!(stored.listen_port, status.port);
+        let projected: Value =
+            serde_json::from_slice(&std::fs::read(&models_path).expect("read models"))
+                .expect("parse models");
+        let projected_base = projected
+            .pointer("/providers/managed-pi/baseUrl")
+            .and_then(Value::as_str)
+            .expect("gateway base url");
+        assert!(projected_base.starts_with(&format!("http://127.0.0.1:{}/pi/", status.port)));
+        assert!(!projected_base.contains(&rejected.listen_port.to_string()));
+
+        let import_guard = service.lock_switch_for_app(AppType::Pi.as_str()).await;
+        service
+            .prepare_pi_portable_import_under_lock(&import_guard)
+            .await
+            .expect("portable import boundary restores the old direct catalog");
+        let import_safe: Value =
+            serde_json::from_slice(&std::fs::read(&models_path).expect("read import-safe models"))
+                .expect("parse import-safe models");
+        assert_eq!(import_safe.pointer("/providers/managed-pi"), Some(&config));
+        service
+            .recover_pi_after_aborted_portable_import_under_lock(&import_guard)
+            .await
+            .expect("aborted portable import restores the gateway");
+        drop(import_guard);
+        let republished: Value =
+            serde_json::from_slice(&std::fs::read(&models_path).expect("read republished models"))
+                .expect("parse republished models");
+        assert!(
+            republished
+                .pointer("/providers/managed-pi/baseUrl")
+                .and_then(Value::as_str)
+                .is_some_and(
+                    |base| base.starts_with(&format!("http://127.0.0.1:{}/pi/", status.port))
+                )
+        );
+        drop(occupied);
+
+        service
+            .stop()
+            .await
+            .expect("a direct stop restores Pi before closing the listener");
+        let direct: Value =
+            serde_json::from_slice(&std::fs::read(&models_path).expect("read direct models"))
+                .expect("parse direct models");
+        assert_eq!(direct.pointer("/providers/managed-pi"), Some(&config));
+        assert!(
+            crate::settings::pi_takeover_enabled(),
+            "safe listener stop preserves desired takeover for the next start"
+        );
+        service
+            .set_takeover_for_app("pi", false)
+            .await
+            .expect("disable Pi takeover");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn initial_pi_bind_failure_keeps_desired_state_and_reports_degraded() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(
+            crate::config::get_home_dir()
+                .join(".pi/agent")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings).expect("Pi settings");
+
+        let occupied = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("reserve port");
+        let db = Arc::new(Database::memory().expect("database"));
+        let mut proxy_config = db.get_proxy_config().await.expect("proxy config");
+        proxy_config.listen_address = "127.0.0.1".to_string();
+        proxy_config.listen_port = occupied.local_addr().expect("address").port();
+        db.update_proxy_config(proxy_config)
+            .await
+            .expect("fixed occupied port");
+        let service = ProxyService::new(db);
+
+        service
+            .set_takeover_for_app("pi", true)
+            .await
+            .expect_err("occupied port must fail");
+        assert!(
+            crate::settings::pi_takeover_enabled(),
+            "bind failure must not erase user intent"
+        );
+        let status = service.get_takeover_status().await.expect("status");
+        assert!(status.pi);
+        assert_eq!(
+            status.pi_operational_state,
+            PiTakeoverOperationalState::Degraded
+        );
+        assert!(!service.is_running().await);
+
+        drop(occupied);
+        service
+            .set_takeover_for_app("pi", false)
+            .await
+            .expect("explicit disable clears desired state");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn listener_absence_does_not_authorize_overwriting_a_non_direct_native_key() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let pi_dir = home.dir.path().join("pi");
+        std::fs::create_dir_all(&pi_dir).expect("Pi directory");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(pi_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = true;
+        crate::settings::update_settings(settings).expect("Pi settings");
+
+        let db = Arc::new(Database::memory().expect("database"));
+        let direct = json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(
+                AppType::Pi.as_str(),
+                ProviderMutationInput {
+                    id: "managed-pi".to_string(),
+                    name: "Managed Pi".to_string(),
+                    settings_config: direct,
+                    website_url: None,
+                    category: None,
+                    created_at: None,
+                    sort_index: Some(0),
+                    notes: None,
+                    meta: None,
+                    icon: Some("pi".to_string()),
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            )
+            .expect("aggregate"),
+            "managed-pi",
+        )
+        .expect("managed provider");
+        let external = json!({
+            "name": "External edit",
+            "api": "openai-responses",
+            "baseUrl": "https://external.example/v1",
+            "apiKey": "external-key",
+            "models": [{"id": "external-model"}]
+        });
+        let native_bytes = serde_json::to_vec(&json!({
+            "providers": {"managed-pi": external}
+        }))
+        .expect("serialize external catalog");
+        let models_path = pi_dir.join("models.json");
+        std::fs::write(&models_path, &native_bytes).expect("external native catalog");
+
+        let service = ProxyService::new(db);
+        let error = service
+            .set_takeover_for_app(AppType::Pi.as_str(), false)
+            .await
+            .expect_err("no listener is not ownership evidence");
+        assert!(error.contains("not already in its direct projection"));
+        assert!(crate::settings::pi_takeover_enabled());
+        assert_eq!(
+            std::fs::read(&models_path).expect("external catalog remains"),
+            native_bytes
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn fenced_pi_runtime_is_not_republished_after_external_native_drift() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let pi_dir = home.dir.path().join("pi");
+        std::fs::create_dir_all(&pi_dir).expect("Pi directory");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(pi_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = true;
+        crate::settings::update_settings(settings).expect("Pi settings");
+
+        let db = Arc::new(Database::memory().expect("database"));
+        let direct = json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(
+                AppType::Pi.as_str(),
+                ProviderMutationInput {
+                    id: "managed-pi".to_string(),
+                    name: "Managed Pi".to_string(),
+                    settings_config: direct.clone(),
+                    website_url: None,
+                    category: None,
+                    created_at: None,
+                    sort_index: Some(0),
+                    notes: None,
+                    meta: None,
+                    icon: Some("pi".to_string()),
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            )
+            .expect("aggregate"),
+            "managed-pi",
+        )
+        .expect("managed provider");
+        let models_path = pi_dir.join("models.json");
+        std::fs::write(
+            &models_path,
+            serde_json::to_vec_pretty(&json!({"providers": {"managed-pi": direct}}))
+                .expect("direct models"),
+        )
+        .expect("seed direct models");
+
+        let service = ProxyService::new(db);
+        *service
+            .pi_listener
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PiListenerIdentity {
+            server_generation: 41,
+            gateway_origin: url::Url::parse("http://127.0.0.1:15721/").expect("gateway origin"),
+        });
+        service
+            .reconcile_pi_runtime()
+            .await
+            .expect("publish initial runtime");
+        assert_eq!(
+            service
+                .get_takeover_status()
+                .await
+                .expect("active status")
+                .pi_operational_state,
+            PiTakeoverOperationalState::Active
+        );
+
+        let epoch = service.begin_pi_catalog_mutation().await;
+        let external = serde_json::to_vec_pretty(&json!({
+            "providers": {
+                "managed-pi": {
+                    "name": "External",
+                    "api": "openai-responses",
+                    "baseUrl": "https://external.example/v1",
+                    "apiKey": "external-key",
+                    "models": [{"id": "external-model"}]
+                }
+            }
+        }))
+        .expect("external models");
+        std::fs::write(&models_path, &external).expect("external edit");
+
+        assert!(matches!(
+            service
+                .republish_current_pi_runtime_if_native_matches(epoch)
+                .await,
+            Err(AppError::Conflict(_))
+        ));
+        assert_eq!(
+            service
+                .get_takeover_status()
+                .await
+                .expect("degraded status")
+                .pi_operational_state,
+            PiTakeoverOperationalState::Degraded
+        );
+        assert_eq!(
+            std::fs::read(&models_path).expect("external file remains"),
+            external
+        );
     }
 
     fn seed_codex_model_template() {

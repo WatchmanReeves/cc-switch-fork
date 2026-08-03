@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FileText } from "lucide-react";
+import { AlertTriangle, FileText, RefreshCw } from "lucide-react";
 import { type AppId } from "@/lib/api";
 import { usePromptActions } from "@/hooks/usePromptActions";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import PromptListItem from "./PromptListItem";
 import PromptFormPanel from "./PromptFormPanel";
+import { PiNativePromptResources } from "./PiNativePromptResources";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { Button } from "@/components/ui/button";
 
 interface PromptPanelProps {
   open: boolean;
@@ -34,10 +36,12 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
     const {
       prompts,
       loading,
+      piLibraryStatus,
       reload,
       savePrompt,
       deletePrompt,
       toggleEnabled,
+      reconcilePiLibrary,
     } = usePromptActions(appId);
 
     useEffect(() => {
@@ -111,6 +115,54 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
         </div>
 
         <div className="flex-1 overflow-y-auto pb-16">
+          {appId === "pi" && <PiNativePromptResources />}
+          {appId === "pi" && (
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold">
+                {t("pi.prompts.agentsLibrary")}
+              </h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t("pi.prompts.agentsLibraryDescription")}
+              </p>
+            </div>
+          )}
+          {appId === "pi" && piLibraryStatus?.needsReconciliation && (
+            <div
+              className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3"
+              role="status"
+            >
+              <div className="flex min-w-0 gap-2">
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-600"
+                  aria-hidden="true"
+                />
+                <div>
+                  <p className="text-sm font-medium">
+                    {t("pi.prompts.libraryDriftTitle")}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t(
+                      piLibraryStatus.nativeExists
+                        ? "pi.prompts.libraryDriftNative"
+                        : "pi.prompts.libraryDriftMissing",
+                    )}
+                  </p>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => {
+                  void reconcilePiLibrary().catch(() => undefined);
+                }}
+              >
+                <RefreshCw className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
+                {t("pi.prompts.reconcileLibrary")}
+              </Button>
+            </div>
+          )}
           {loading ? (
             <div className="text-center py-12 text-muted-foreground">
               {t("prompts.loading")}

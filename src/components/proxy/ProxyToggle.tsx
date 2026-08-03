@@ -5,12 +5,13 @@
  * 启用时自动接管 Live 配置，关闭时恢复原始配置
  */
 
-import { Radio, Loader2 } from "lucide-react";
+import { AlertTriangle, Radio, Loader2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
+import { getAppLabel } from "@/config/appConfig";
 
 interface ProxyToggleProps {
   className?: string;
@@ -31,34 +32,34 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
   };
 
   const takeoverEnabled = takeoverStatus?.[activeApp] || false;
+  const piDegraded =
+    activeApp === "pi" &&
+    takeoverEnabled &&
+    takeoverStatus?.pi_operational_state === "degraded";
 
-  const appLabel =
-    activeApp === "claude"
-      ? "Claude"
-      : activeApp === "codex"
-        ? "Codex"
-        : activeApp === "gemini"
-          ? "Gemini"
-          : activeApp === "grokbuild"
-            ? "Grok Build"
-            : "OpenCode";
+  const appLabel = getAppLabel(activeApp);
 
-  const tooltipText = takeoverEnabled
-    ? isRunning
-      ? t("proxy.takeover.tooltip.active", {
-          appLabel,
-          address: status?.address,
-          port: status?.port,
-          defaultValue: `${appLabel} 已接管 - ${status?.address}:${status?.port}\n切换该应用供应商为热切换`,
-        })
-      : t("proxy.takeover.tooltip.broken", {
-          appLabel,
-          defaultValue: `${appLabel} 已接管，但代理服务未运行`,
-        })
-    : t("proxy.takeover.tooltip.inactive", {
+  const tooltipText = piDegraded
+    ? t("proxy.takeover.tooltip.degraded", {
         appLabel,
-        defaultValue: `接管 ${appLabel} 的 Live 配置，让该应用请求走本地代理`,
-      });
+        defaultValue: `${appLabel} routing is desired but currently degraded; CC Switch will retry it`,
+      })
+    : takeoverEnabled
+      ? isRunning
+        ? t("proxy.takeover.tooltip.active", {
+            appLabel,
+            address: status?.address,
+            port: status?.port,
+            defaultValue: `${appLabel} 已接管 - ${status?.address}:${status?.port}\n切换该应用供应商为热切换`,
+          })
+        : t("proxy.takeover.tooltip.broken", {
+            appLabel,
+            defaultValue: `${appLabel} 已接管，但代理服务未运行`,
+          })
+      : t("proxy.takeover.tooltip.inactive", {
+          appLabel,
+          defaultValue: `接管 ${appLabel} 的 Live 配置，让该应用请求走本地代理`,
+        });
 
   return (
     <div
@@ -70,6 +71,8 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     >
       {isPending ? (
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      ) : piDegraded ? (
+        <AlertTriangle className="h-4 w-4 text-amber-500" />
       ) : (
         <Radio
           className={cn(
@@ -85,6 +88,11 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         onCheckedChange={handleToggle}
         disabled={isPending}
       />
+      {piDegraded && (
+        <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
+          {t("proxy.takeover.degraded", { defaultValue: "Pending" })}
+        </span>
+      )}
     </div>
   );
 }

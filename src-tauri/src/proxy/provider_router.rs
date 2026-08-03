@@ -29,6 +29,16 @@ impl ProviderRouter {
         }
     }
 
+    async fn app_proxy_config(
+        &self,
+        app_type: &str,
+    ) -> Result<crate::proxy::types::AppProxyConfig, AppError> {
+        if app_type == AppType::Pi.as_str() {
+            return Ok(crate::settings::get_pi_app_proxy_config());
+        }
+        self.db.get_proxy_config_for_app(app_type).await
+    }
+
     /// 选择可用的供应商（支持故障转移）
     ///
     /// 返回按优先级排序的可用供应商列表：
@@ -40,7 +50,7 @@ impl ProviderRouter {
         let mut circuit_open_count = 0usize;
 
         // 检查该应用的自动故障转移开关是否开启（从 proxy_config 表读取）
-        let auto_failover_enabled = match self.db.get_proxy_config_for_app(app_type).await {
+        let auto_failover_enabled = match self.app_proxy_config(app_type).await {
             Ok(config) => config.auto_failover_enabled,
             Err(e) => {
                 log::error!("[{app_type}] 读取 proxy_config 失败: {e}，默认禁用故障转移");
@@ -132,7 +142,7 @@ impl ProviderRouter {
         error_msg: Option<String>,
     ) -> Result<(), AppError> {
         // 1. 按应用独立获取熔断器配置
-        let failure_threshold = match self.db.get_proxy_config_for_app(app_type).await {
+        let failure_threshold = match self.app_proxy_config(app_type).await {
             Ok(app_config) => app_config.circuit_failure_threshold,
             Err(_) => 5, // 默认值
         };
@@ -251,7 +261,7 @@ impl ProviderRouter {
         let app_type = key.split(':').next().unwrap_or("claude");
 
         // 按应用独立读取熔断器配置
-        let config = match self.db.get_proxy_config_for_app(app_type).await {
+        let config = match self.app_proxy_config(app_type).await {
             Ok(app_config) => crate::proxy::circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: app_config.circuit_failure_threshold,
                 success_threshold: app_config.circuit_success_threshold,

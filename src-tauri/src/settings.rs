@@ -17,8 +17,154 @@ pub struct CustomEndpoint {
     pub last_used: Option<i64>,
 }
 
+/// Device-local Pi gateway behavior. The frozen `proxy_config` schema has a
+/// closed four-app domain, so Pi must not manufacture an out-of-contract row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiProxySettings {
+    #[serde(default)]
+    pub auto_failover_enabled: bool,
+    #[serde(default = "default_pi_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_pi_first_byte_timeout")]
+    pub streaming_first_byte_timeout: u32,
+    #[serde(default = "default_pi_idle_timeout")]
+    pub streaming_idle_timeout: u32,
+    #[serde(default = "default_pi_request_timeout")]
+    pub non_streaming_timeout: u32,
+    #[serde(default = "default_pi_circuit_failure_threshold")]
+    pub circuit_failure_threshold: u32,
+    #[serde(default = "default_pi_circuit_success_threshold")]
+    pub circuit_success_threshold: u32,
+    #[serde(default = "default_pi_circuit_timeout")]
+    pub circuit_timeout_seconds: u32,
+    #[serde(default = "default_pi_circuit_error_rate")]
+    pub circuit_error_rate_threshold: f64,
+    #[serde(default = "default_pi_circuit_min_requests")]
+    pub circuit_min_requests: u32,
+}
+
+const fn default_pi_max_retries() -> u32 {
+    3
+}
+const fn default_pi_first_byte_timeout() -> u32 {
+    60
+}
+const fn default_pi_idle_timeout() -> u32 {
+    120
+}
+const fn default_pi_request_timeout() -> u32 {
+    600
+}
+const fn default_pi_circuit_failure_threshold() -> u32 {
+    4
+}
+const fn default_pi_circuit_success_threshold() -> u32 {
+    2
+}
+const fn default_pi_circuit_timeout() -> u32 {
+    60
+}
+const fn default_pi_circuit_min_requests() -> u32 {
+    10
+}
+fn default_pi_circuit_error_rate() -> f64 {
+    0.6
+}
+
+impl Default for PiProxySettings {
+    fn default() -> Self {
+        Self {
+            auto_failover_enabled: false,
+            max_retries: default_pi_max_retries(),
+            streaming_first_byte_timeout: default_pi_first_byte_timeout(),
+            streaming_idle_timeout: default_pi_idle_timeout(),
+            non_streaming_timeout: default_pi_request_timeout(),
+            circuit_failure_threshold: default_pi_circuit_failure_threshold(),
+            circuit_success_threshold: default_pi_circuit_success_threshold(),
+            circuit_timeout_seconds: default_pi_circuit_timeout(),
+            circuit_error_rate_threshold: default_pi_circuit_error_rate(),
+            circuit_min_requests: default_pi_circuit_min_requests(),
+        }
+    }
+}
+
+impl PiProxySettings {
+    pub(crate) fn validate(&self) -> Result<(), AppError> {
+        if !self.circuit_error_rate_threshold.is_finite()
+            || !(0.0..=1.0).contains(&self.circuit_error_rate_threshold)
+        {
+            return Err(AppError::InvalidInput(
+                "Pi circuit error-rate threshold must be finite and within [0, 1]".to_string(),
+            ));
+        }
+        if self.max_retries > 32 {
+            return Err(AppError::InvalidInput(
+                "Pi max retries cannot exceed 32".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn app_config(&self, enabled: bool) -> crate::proxy::types::AppProxyConfig {
+        crate::proxy::types::AppProxyConfig {
+            app_type: "pi".to_string(),
+            enabled,
+            auto_failover_enabled: self.auto_failover_enabled,
+            max_retries: self.max_retries,
+            streaming_first_byte_timeout: self.streaming_first_byte_timeout,
+            streaming_idle_timeout: self.streaming_idle_timeout,
+            non_streaming_timeout: self.non_streaming_timeout,
+            circuit_failure_threshold: self.circuit_failure_threshold,
+            circuit_success_threshold: self.circuit_success_threshold,
+            circuit_timeout_seconds: self.circuit_timeout_seconds,
+            circuit_error_rate_threshold: self.circuit_error_rate_threshold,
+            circuit_min_requests: self.circuit_min_requests,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
+}
+
+/// Device-local bearer used only between Pi and cc-switch's loopback gateway.
+///
+/// Deliberately redacts `Debug`; the value must never be returned by settings
+/// IPC, copied into SQLite, or emitted to logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GatewayToken(String);
+
+impl GatewayToken {
+    fn generate() -> Self {
+        Self(format!(
+            "ccs_pi_{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn constant_time_eq(&self, candidate: &str) -> bool {
+        let expected = self.0.as_bytes();
+        let candidate = candidate.as_bytes();
+        let mut difference = expected.len() ^ candidate.len();
+        let shared = expected.len().min(candidate.len());
+        for index in 0..shared {
+            difference |= usize::from(expected[index] ^ candidate[index]);
+        }
+        difference == 0
+    }
+}
+
+impl std::fmt::Debug for GatewayToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GatewayToken(<redacted>)")
+    }
 }
 
 /// 主页面显示的应用配置
@@ -46,6 +192,8 @@ pub struct VisibleApps {
     pub openclaw: bool,
     #[serde(default)]
     pub hermes: bool,
+    #[serde(default = "default_true")]
+    pub pi: bool,
 }
 
 impl Default for VisibleApps {
@@ -59,6 +207,7 @@ impl Default for VisibleApps {
             opencode: true,
             openclaw: true,
             hermes: false, // 默认不显示，需用户手动启用
+            pi: true,
         }
     }
 }
@@ -75,6 +224,7 @@ impl VisibleApps {
             AppType::OpenCode => self.opencode,
             AppType::OpenClaw => self.openclaw,
             AppType::Hermes => self.hermes,
+            AppType::Pi => self.pi,
         }
     }
 }
@@ -422,6 +572,8 @@ pub struct AppSettings {
     pub openclaw_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hermes_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_config_dir: Option<String>,
 
     // ===== 当前供应商 ID（设备级）=====
     /// 当前 Claude 供应商 ID（本地存储，优先于数据库 is_current）
@@ -448,6 +600,29 @@ pub struct AppSettings {
     /// 当前 Hermes 供应商 ID（本地存储，保持结构一致）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_hermes: Option<String>,
+    /// 当前 Pi 供应商 ID（本地存储）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_provider_pi: Option<String>,
+
+    /// Device-local desired state for Pi's native `models.json` gateway
+    /// projection. Unlike the shared proxy-config row, this survives database
+    /// replacement and is reconciled against the live listener on startup.
+    #[serde(default)]
+    pub pi_takeover_enabled: bool,
+    #[serde(default)]
+    pub pi_proxy: PiProxySettings,
+
+    /// Stable device-installation secret for Pi's loopback gateway.
+    ///
+    /// This field is serialized only to the device settings file. The frontend
+    /// projection clears it and settings-save merge restores the existing
+    /// value, so ordinary IPC cannot read, replace, or clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Public so integration tests and downstream Rust callers can continue to
+    // use struct-update syntax with `AppSettings`. IPC still cannot observe or
+    // mutate the value: the settings command clears it on reads and restores
+    // the persisted value on writes.
+    pub pi_gateway_token: Option<GatewayToken>,
 
     // ===== Skill 同步设置 =====
     /// Skill 同步方式：auto（默认，优先 symlink）、symlink、copy
@@ -533,6 +708,7 @@ impl Default for AppSettings {
             opencode_config_dir: None,
             openclaw_config_dir: None,
             hermes_config_dir: None,
+            pi_config_dir: None,
             current_provider_claude: None,
             current_provider_claude_desktop: None,
             current_provider_codex: None,
@@ -541,6 +717,10 @@ impl Default for AppSettings {
             current_provider_opencode: None,
             current_provider_openclaw: None,
             current_provider_hermes: None,
+            current_provider_pi: None,
+            pi_takeover_enabled: false,
+            pi_proxy: PiProxySettings::default(),
+            pi_gateway_token: None,
             skill_sync_method: SyncMethod::default(),
             skill_storage_location: SkillStorageLocation::default(),
             webdav_sync: None,
@@ -614,6 +794,13 @@ impl AppSettings {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
+        self.pi_config_dir = self
+            .pi_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         self.language = self
             .language
             .as_ref()
@@ -672,31 +859,9 @@ fn save_settings_file(settings: &AppSettings) -> Result<(), AppError> {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 
-    let json = serde_json::to_string_pretty(&normalized)
+    let json = serde_json::to_vec_pretty(&normalized)
         .map_err(|e| AppError::JsonSerialize { source: e })?;
-    #[cfg(unix)]
-    {
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| AppError::io(&path, e))?;
-        file.write_all(json.as_bytes())
-            .map_err(|e| AppError::io(&path, e))?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::write(&path, json).map_err(|e| AppError::io(&path, e))?;
-    }
-
-    Ok(())
+    crate::config::atomic_write_durable(&path, &json, Some(0o600))
 }
 
 static SETTINGS_STORE: OnceLock<RwLock<AppSettings>> = OnceLock::new();
@@ -705,7 +870,7 @@ fn settings_store() -> &'static RwLock<AppSettings> {
     SETTINGS_STORE.get_or_init(|| RwLock::new(AppSettings::load_from_file()))
 }
 
-fn resolve_override_path(raw: &str) -> PathBuf {
+pub(crate) fn resolve_override_path(raw: &str) -> PathBuf {
     if raw == "~" {
         if let Some(home) = dirs::home_dir() {
             return home;
@@ -742,17 +907,17 @@ pub fn get_settings_for_frontend() -> AppSettings {
         s3.secret_access_key.clear();
     }
     settings.webdav_backup = None;
+    settings.pi_gateway_token = None;
     settings
 }
 
 pub fn update_settings(mut new_settings: AppSettings) -> Result<(), AppError> {
     new_settings.normalize_paths();
-    save_settings_file(&new_settings)?;
-
     let mut guard = settings_store().write().unwrap_or_else(|e| {
         log::warn!("设置锁已毒化，使用恢复值: {e}");
         e.into_inner()
     });
+    save_settings_file(&new_settings)?;
     *guard = new_settings;
     Ok(())
 }
@@ -933,6 +1098,64 @@ pub fn get_hermes_override_dir() -> Option<PathBuf> {
         .map(|p| resolve_override_path(p))
 }
 
+pub fn get_pi_override_dir() -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    settings
+        .pi_config_dir
+        .as_ref()
+        .map(|p| resolve_override_path(p))
+}
+
+pub(crate) fn get_or_create_pi_gateway_token() -> Result<GatewayToken, AppError> {
+    let mut token = None;
+    mutate_settings(|settings| {
+        let stored = settings
+            .pi_gateway_token
+            .get_or_insert_with(GatewayToken::generate);
+        token = Some(stored.clone());
+    })?;
+    token.ok_or_else(|| AppError::Config("无法创建 Pi 网关凭据".to_string()))
+}
+
+pub(crate) fn get_pi_gateway_token() -> Result<GatewayToken, AppError> {
+    get_settings().pi_gateway_token.ok_or_else(|| {
+        AppError::Conflict(
+            "Pi takeover is active but its gateway credential is unavailable".to_string(),
+        )
+    })
+}
+
+pub(crate) fn reset_pi_gateway_token() -> Result<GatewayToken, AppError> {
+    let generated = GatewayToken::generate();
+    mutate_settings(|settings| settings.pi_gateway_token = Some(generated.clone()))?;
+    Ok(generated)
+}
+
+pub(crate) fn replace_pi_gateway_token(token: GatewayToken) -> Result<(), AppError> {
+    mutate_settings(|settings| settings.pi_gateway_token = Some(token))
+}
+
+pub(crate) fn pi_takeover_enabled() -> bool {
+    get_settings().pi_takeover_enabled
+}
+
+pub(crate) fn set_pi_takeover_enabled(enabled: bool) -> Result<(), AppError> {
+    mutate_settings(|settings| settings.pi_takeover_enabled = enabled)
+}
+
+pub(crate) fn get_pi_proxy_settings() -> PiProxySettings {
+    get_settings().pi_proxy
+}
+
+pub(crate) fn update_pi_proxy_settings(settings: PiProxySettings) -> Result<(), AppError> {
+    settings.validate()?;
+    mutate_settings(|current| current.pi_proxy = settings)
+}
+
+pub(crate) fn get_pi_app_proxy_config() -> crate::proxy::types::AppProxyConfig {
+    get_pi_proxy_settings().app_config(pi_takeover_enabled())
+}
+
 pub fn preserve_codex_official_auth_on_switch() -> bool {
     settings_store()
         .read()
@@ -970,6 +1193,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         AppType::OpenCode => settings.current_provider_opencode.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw.clone(),
         AppType::Hermes => settings.current_provider_hermes.clone(),
+        AppType::Pi => settings.current_provider_pi.clone(),
     }
 }
 
@@ -988,6 +1212,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::OpenCode => settings.current_provider_opencode = id_owned.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw = id_owned.clone(),
         AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
+        AppType::Pi => settings.current_provider_pi = id_owned.clone(),
     })
 }
 
@@ -1161,6 +1386,10 @@ mod tests {
         .expect("visible apps");
 
         assert!(visible.is_visible(&AppType::ClaudeDesktop));
+        assert!(
+            visible.is_visible(&AppType::Pi),
+            "Pi is a first-class app and must be visible when older settings omit its field"
+        );
     }
 
     #[test]

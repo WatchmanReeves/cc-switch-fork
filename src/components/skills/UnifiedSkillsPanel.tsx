@@ -15,6 +15,7 @@ import {
   type SkillBackupEntry,
   useDeleteSkillBackup,
   useInstalledSkills,
+  usePiSkillStatuses,
   useSkillBackups,
   useRestoreSkillBackup,
   useToggleSkillApp,
@@ -25,6 +26,7 @@ import {
   useCheckSkillUpdates,
   useUpdateSkill,
   type InstalledSkill,
+  type PiSkillStatus,
   type SkillUpdateInfo,
 } from "@/hooks/useSkills";
 import type { AppId } from "@/lib/api/types";
@@ -82,6 +84,11 @@ const UnifiedSkillsPanel = React.forwardRef<
 
   const { data: skills, isLoading } = useInstalledSkills();
   const {
+    data: piSkillStatuses,
+    isLoading: isLoadingPiSkillStatuses,
+    isError: isPiSkillStatusError,
+  } = usePiSkillStatuses();
+  const {
     data: skillBackups = [],
     refetch: refetchSkillBackups,
     isFetching: isFetchingSkillBackups,
@@ -123,15 +130,22 @@ const UnifiedSkillsPanel = React.forwardRef<
       opencode: 0,
       openclaw: 0,
       hermes: 0,
+      pi: 0,
     };
     if (!skills) return counts;
     skills.forEach((skill) => {
       for (const app of SKILLS_APP_IDS) {
-        if (skill.apps[app]) counts[app]++;
+        if (app === "pi") {
+          if (piSkillStatuses?.[skill.id]?.effectivelyDiscovered) {
+            counts.pi++;
+          }
+        } else if (skill.apps[app]) {
+          counts[app]++;
+        }
       }
     });
     return counts;
-  }, [skills]);
+  }, [piSkillStatuses, skills]);
 
   const handleToggleApp = async (id: string, app: AppId, enabled: boolean) => {
     try {
@@ -433,6 +447,11 @@ const UnifiedSkillsPanel = React.forwardRef<
                   onToggleApp={handleToggleApp}
                   onUninstall={() => handleUninstall(skill)}
                   onUpdate={() => handleUpdateSkill(skill)}
+                  piStatus={piSkillStatuses?.[skill.id]}
+                  piStatusUnavailable={
+                    !isLoadingPiSkillStatuses &&
+                    (isPiSkillStatusError || !piSkillStatuses?.[skill.id])
+                  }
                   isLast={index === skills.length - 1}
                 />
               ))}
@@ -486,6 +505,8 @@ interface InstalledSkillListItemProps {
   onToggleApp: (id: string, app: AppId, enabled: boolean) => void;
   onUninstall: () => void;
   onUpdate?: () => void;
+  piStatus?: PiSkillStatus;
+  piStatusUnavailable?: boolean;
   isLast?: boolean;
 }
 
@@ -496,6 +517,8 @@ const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
   onToggleApp,
   onUninstall,
   onUpdate,
+  piStatus,
+  piStatusUnavailable,
   isLast,
 }) => {
   const { t } = useTranslation();
@@ -515,6 +538,39 @@ const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
     }
     return t("skills.local");
   }, [skill.repoOwner, skill.repoName, t]);
+
+  const piVisualState = useMemo(() => {
+    if (!piStatus) {
+      return {
+        active: false,
+        desired: skill.apps.pi,
+        warning: true,
+        label: piStatusUnavailable
+          ? t("skills.piStatus.inspectionUnavailable")
+          : t("skills.piStatus.inspecting"),
+      };
+    }
+
+    let key = "inactive";
+    if (piStatus.effectivelyDiscovered) {
+      key = piStatus.desiredEnabled ? "active" : "unmanagedActive";
+    } else if (piStatus.desiredEnabled) {
+      if (piStatus.ownership === "foreign") key = "foreignConflict";
+      else if (piStatus.ownership === "stale") key = "staleDeployment";
+      else if (piStatus.discovery === "shadowed") key = "shadowed";
+      else if (piStatus.discovery === "invalid") key = "invalid";
+      else key = "desiredButMissing";
+    }
+
+    return {
+      active: piStatus.effectivelyDiscovered,
+      desired: piStatus.desiredEnabled,
+      warning:
+        piStatus.effectivelyDiscovered !== piStatus.desiredEnabled ||
+        Boolean(piStatus.issue),
+      label: t(`skills.piStatus.${key}`),
+    };
+  }, [piStatus, piStatusUnavailable, skill.apps.pi, t]);
 
   return (
     <ListItemRow isLast={isLast}>
@@ -543,6 +599,18 @@ const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
               {t("skills.updateAvailable")}
             </Badge>
           )}
+          <Badge
+            variant="outline"
+            className={`shrink-0 text-[10px] px-1.5 py-0 h-4 ${
+              piVisualState.active && !piVisualState.warning
+                ? "border-emerald-500 text-emerald-600 dark:text-emerald-400"
+                : piVisualState.warning
+                  ? "border-amber-500 text-amber-600 dark:text-amber-400"
+                  : "text-muted-foreground"
+            }`}
+          >
+            Pi: {piVisualState.label}
+          </Badge>
         </div>
         {skill.description && (
           <p
@@ -556,6 +624,14 @@ const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
 
       <AppToggleGroup
         apps={skill.apps}
+        stateByApp={{
+          pi: {
+            active: piVisualState.active,
+            desired: piVisualState.desired,
+            warning: piVisualState.warning,
+            statusLabel: piVisualState.label,
+          },
+        }}
         onToggle={(app, enabled) => onToggleApp(skill.id, app, enabled)}
         appIds={SKILLS_APP_IDS}
       />
@@ -751,6 +827,7 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
           opencode: skill.foundIn.includes("opencode"),
           openclaw: false,
           hermes: skill.foundIn.includes("hermes"),
+          pi: skill.foundIn.includes("pi"),
         },
       ]),
     ),
@@ -778,6 +855,7 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
           opencode: false,
           openclaw: false,
           hermes: false,
+          pi: false,
         },
       })),
     );

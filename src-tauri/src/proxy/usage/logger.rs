@@ -2,9 +2,9 @@
 
 use super::calculator::{CostBreakdown, CostCalculator, ModelPricing};
 use super::parser::TokenUsage;
+use super::semantics::InputTokenSemantics;
 use crate::database::{Database, PRICING_SOURCE_REQUEST, PRICING_SOURCE_RESPONSE};
 use crate::error::AppError;
-use crate::services::sql_helpers::{INPUT_TOKEN_SEMANTICS_FRESH, INPUT_TOKEN_SEMANTICS_TOTAL};
 use crate::services::usage_stats::{find_model_pricing_row, is_placeholder_pricing_model};
 use rusqlite::OptionalExtension;
 use rust_decimal::Decimal;
@@ -72,6 +72,9 @@ pub struct RequestLog {
     /// 用 model/request_model 猜——路由接管下三者可能各不相同。
     /// 错误行（未计价）为空字符串。
     pub pricing_model: String,
+    /// Copied from the response parser/wire family at request admission.
+    /// Product app ownership is intentionally not consulted at write time.
+    pub input_token_semantics: InputTokenSemantics,
     pub usage: TokenUsage,
     pub cost: Option<CostBreakdown>,
     pub latency_ms: u64,
@@ -121,12 +124,7 @@ impl<'a> UsageLogger<'a> {
             };
 
         let created_at = chrono::Utc::now().timestamp();
-        let input_token_semantics =
-            if crate::services::sql_helpers::is_cache_inclusive_app(log.app_type.as_str()) {
-                INPUT_TOKEN_SEMANTICS_TOTAL
-            } else {
-                INPUT_TOKEN_SEMANTICS_FRESH
-            };
+        let input_token_semantics = log.input_token_semantics.stored_value();
         let semantic = UsageSemantic::from_log(log, input_token_semantics);
         let existing = Self::load_existing_semantic(&conn, &log.request_id)?;
 
@@ -266,6 +264,7 @@ impl<'a> UsageLogger<'a> {
         status_code: u16,
         error_message: String,
         latency_ms: u64,
+        input_token_semantics: InputTokenSemantics,
     ) -> Result<(), AppError> {
         let request_model = model.clone();
         let log = RequestLog {
@@ -276,6 +275,7 @@ impl<'a> UsageLogger<'a> {
             request_model,
             // 错误行未经过计价，留空（回填的 has_usage 闸门也不会碰全 0 行）
             pricing_model: String::new(),
+            input_token_semantics,
             usage: TokenUsage::default(),
             cost: None,
             latency_ms,
@@ -307,6 +307,7 @@ impl<'a> UsageLogger<'a> {
         is_streaming: bool,
         session_id: Option<String>,
         provider_type: Option<String>,
+        input_token_semantics: InputTokenSemantics,
     ) -> Result<(), AppError> {
         let request_model = model.clone();
         let log = RequestLog {
@@ -317,6 +318,7 @@ impl<'a> UsageLogger<'a> {
             request_model,
             // 错误行未经过计价，留空（回填的 has_usage 闸门也不会碰全 0 行）
             pricing_model: String::new(),
+            input_token_semantics,
             usage: TokenUsage::default(),
             cost: None,
             latency_ms,
@@ -451,6 +453,7 @@ impl<'a> UsageLogger<'a> {
         model: String,
         request_model: String,
         pricing_model: String,
+        input_token_semantics: InputTokenSemantics,
         usage: TokenUsage,
         cost_multiplier: Decimal,
         latency_ms: u64,
@@ -471,8 +474,8 @@ impl<'a> UsageLogger<'a> {
             log::warn!("[USG-002] 模型定价未找到，成本将记录为 0: {pricing_model}");
         }
 
-        let cost = CostCalculator::try_calculate_for_app(
-            &app_type,
+        let cost = CostCalculator::try_calculate_with_input_semantics(
+            input_token_semantics,
             &usage,
             pricing.as_ref(),
             cost_multiplier,
@@ -485,6 +488,7 @@ impl<'a> UsageLogger<'a> {
             model,
             request_model,
             pricing_model,
+            input_token_semantics,
             usage,
             cost,
             latency_ms,
@@ -513,6 +517,7 @@ mod tests {
             model: "gpt-5.6".to_string(),
             request_model: "gpt-5.6".to_string(),
             pricing_model: "gpt-5.6".to_string(),
+            input_token_semantics: InputTokenSemantics::TotalIncludesCacheBuckets,
             usage: TokenUsage {
                 input_tokens,
                 output_tokens: 5,
@@ -566,6 +571,7 @@ mod tests {
             "test-model".to_string(),
             "req-model".to_string(),
             "test-model".to_string(),
+            InputTokenSemantics::FreshExcludesCache,
             usage,
             Decimal::from(1),
             100,
@@ -751,6 +757,7 @@ mod tests {
             500,
             "Internal Server Error".to_string(),
             50,
+            InputTokenSemantics::FreshExcludesCache,
         )?;
 
         // 验证错误记录已插入
@@ -778,6 +785,7 @@ mod tests {
             model: "grok-4.5".to_string(),
             request_model: "grok-4.5".to_string(),
             pricing_model: String::new(),
+            input_token_semantics: InputTokenSemantics::TotalIncludesCacheBuckets,
             usage: TokenUsage::default(),
             cost: None,
             latency_ms: 1,
@@ -798,7 +806,10 @@ mod tests {
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(semantics, INPUT_TOKEN_SEMANTICS_TOTAL);
+        assert_eq!(
+            semantics,
+            InputTokenSemantics::TotalIncludesCacheBuckets.stored_value()
+        );
         Ok(())
     }
 }

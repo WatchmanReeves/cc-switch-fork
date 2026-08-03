@@ -26,6 +26,7 @@ pub async fn stop_proxy_server(state: tauri::State<'_, AppState>) -> Result<(), 
         || takeover.grokbuild
         || takeover.opencode
         || takeover.openclaw
+        || takeover.pi
     {
         return Err(
             "仍有应用处于代理接管状态，请先在设置中关闭对应应用接管后再停止本地路由。".to_string(),
@@ -120,6 +121,9 @@ pub async fn get_proxy_config_for_app(
     state: tauri::State<'_, AppState>,
     app_type: String,
 ) -> Result<AppProxyConfig, String> {
+    if app_type == "pi" {
+        return Ok(crate::settings::get_pi_app_proxy_config());
+    }
     let db = &state.db;
     db.get_proxy_config_for_app(&app_type)
         .await
@@ -137,6 +141,60 @@ pub async fn update_proxy_config_for_app(
     let db = &state.db;
     let app_type = config.app_type.clone();
     let circuit_config = CircuitBreakerConfig::from(&config);
+
+    if app_type == "pi" {
+        let _guard = state
+            .proxy_service
+            .lock_switch_for_app(crate::app_config::AppType::Pi.as_str())
+            .await;
+        let previous = crate::settings::get_pi_proxy_settings();
+        if config.enabled != crate::settings::pi_takeover_enabled() {
+            return Err(
+                "Pi enabled state is owned by set_proxy_takeover_for_app, not proxy config"
+                    .to_string(),
+            );
+        }
+        let next = crate::settings::PiProxySettings {
+            auto_failover_enabled: config.auto_failover_enabled,
+            max_retries: config.max_retries,
+            streaming_first_byte_timeout: config.streaming_first_byte_timeout,
+            streaming_idle_timeout: config.streaming_idle_timeout,
+            non_streaming_timeout: config.non_streaming_timeout,
+            circuit_failure_threshold: config.circuit_failure_threshold,
+            circuit_success_threshold: config.circuit_success_threshold,
+            circuit_timeout_seconds: config.circuit_timeout_seconds,
+            circuit_error_rate_threshold: config.circuit_error_rate_threshold,
+            circuit_min_requests: config.circuit_min_requests,
+        };
+        let epoch = state.proxy_service.begin_pi_catalog_mutation().await;
+        if let Err(error) = crate::settings::update_pi_proxy_settings(next) {
+            let _ = state
+                .proxy_service
+                .reconcile_pi_runtime_at_epoch(epoch)
+                .await;
+            return Err(error.to_string());
+        }
+        if let Err(error) = state
+            .proxy_service
+            .reconcile_pi_runtime_at_epoch(epoch)
+            .await
+        {
+            let _ = crate::settings::update_pi_proxy_settings(previous);
+            let rollback_epoch = state.proxy_service.begin_pi_catalog_mutation().await;
+            let _ = state
+                .proxy_service
+                .reconcile_pi_runtime_at_epoch(rollback_epoch)
+                .await;
+            return Err(format!(
+                "Pi proxy config changed but runtime publication failed: {error}"
+            ));
+        }
+        state
+            .proxy_service
+            .update_circuit_breaker_config_for_app(&app_type, circuit_config)
+            .await?;
+        return Ok(());
+    }
 
     db.update_proxy_config_for_app(config)
         .await

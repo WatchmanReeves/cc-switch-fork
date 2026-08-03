@@ -54,8 +54,7 @@ pub fn fresh_input_sql(alias: &str) -> String {
     format!(
         "CASE \
               WHEN {prefix}input_token_semantics = {INPUT_TOKEN_SEMANTICS_FRESH} THEN {prefix}input_tokens \
-              WHEN {prefix}app_type IN ({app_type_list}) \
-                   AND {prefix}input_token_semantics = {INPUT_TOKEN_SEMANTICS_TOTAL} \
+              WHEN {prefix}input_token_semantics = {INPUT_TOKEN_SEMANTICS_TOTAL} \
                    AND {prefix}input_tokens >= ({prefix}cache_read_tokens + {prefix}cache_creation_tokens) \
               THEN ({prefix}input_tokens - {prefix}cache_read_tokens - {prefix}cache_creation_tokens) \
               WHEN {prefix}app_type IN ({app_type_list}) \
@@ -142,6 +141,40 @@ mod tests {
         let total: i64 = conn.query_row(&sql, [], |r| r.get(0)).unwrap();
         // Codex: 400; Gemini: 500; Grok Build: 450; Claude: 200 unchanged.
         assert_eq!(total, 400 + 500 + 450 + 200);
+    }
+
+    #[test]
+    fn stored_wire_semantics_override_logical_pi_app_type() {
+        let conn = setup_conn();
+        conn.execute(
+            "INSERT INTO proxy_request_logs (
+                request_id, app_type, input_tokens, cache_read_tokens,
+                cache_creation_tokens, input_token_semantics
+             ) VALUES
+                ('pi-openai', 'pi', 1000, 700, 100, 1),
+                ('pi-anthropic', 'pi', 1000, 700, 100, 2)",
+            [],
+        )
+        .unwrap();
+
+        let sql = format!(
+            "SELECT request_id, {} FROM proxy_request_logs ORDER BY request_id",
+            fresh_input_sql("")
+        );
+        let values: Vec<(String, i64)> = conn
+            .prepare(&sql)
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            values,
+            vec![
+                ("pi-anthropic".to_string(), 1000),
+                ("pi-openai".to_string(), 200),
+            ]
+        );
     }
 
     #[test]

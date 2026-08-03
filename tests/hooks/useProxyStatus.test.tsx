@@ -131,4 +131,74 @@ describe("useProxyStatus", () => {
     expect(invokeMock).toHaveBeenCalledWith("start_proxy_server");
     expect(invokeMock).toHaveBeenCalledWith("stop_proxy_server");
   });
+
+  it("refreshes desired takeover state even when activation rejects", async () => {
+    let desiredPi = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_proxy_status") {
+        return Promise.resolve({
+          running: false,
+          address: "127.0.0.1",
+          port: 15721,
+          active_connections: 0,
+          total_requests: 0,
+          success_requests: 0,
+          failed_requests: 0,
+          success_rate: 0,
+          uptime_seconds: 0,
+          current_provider: null,
+          current_provider_id: null,
+          last_request_at: null,
+          last_error: null,
+          failover_count: 0,
+        });
+      }
+      if (command === "get_proxy_takeover_status") {
+        return Promise.resolve({
+          claude: false,
+          codex: false,
+          gemini: false,
+          grokbuild: false,
+          opencode: false,
+          openclaw: false,
+          pi: desiredPi,
+          piOperationalState: desiredPi ? "degraded" : "disabled",
+        });
+      }
+      if (command === "set_proxy_takeover_for_app") {
+        desiredPi = true;
+        return Promise.reject(new Error("listener unavailable"));
+      }
+      return Promise.resolve(null);
+    });
+
+    const { wrapper, queryClient } = createWrapper();
+    const { result, rerender } = renderHook(() => useProxyStatus(), {
+      wrapper,
+    });
+    await waitFor(() => expect(result.current.takeoverStatus).toBeDefined());
+
+    await expect(
+      act(async () => {
+        await result.current.setTakeoverForApp({
+          appType: "pi",
+          enabled: true,
+        });
+      }),
+    ).rejects.toThrow("listener unavailable");
+
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(
+          ([command]) => command === "get_proxy_takeover_status",
+        ).length,
+      ).toBeGreaterThan(1),
+    );
+    expect(queryClient.getQueryData(proxyKeys.takeoverStatus)).toMatchObject({
+      pi: true,
+      piOperationalState: "degraded",
+    });
+    rerender();
+    await waitFor(() => expect(result.current.takeoverStatus?.pi).toBe(true));
+  });
 });

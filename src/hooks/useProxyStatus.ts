@@ -12,6 +12,7 @@ import {
   useProxyTakeoverStatus,
 } from "@/lib/query/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { getAppLabel } from "@/config/appConfig";
 
 /**
  * 代理服务状态管理
@@ -114,16 +115,7 @@ export function useProxyStatus() {
     mutationFn: ({ appType, enabled }: { appType: string; enabled: boolean }) =>
       proxyApi.setProxyTakeoverForApp(appType, enabled),
     onSuccess: (_data, variables) => {
-      const appLabel =
-        variables.appType === "claude"
-          ? "Claude"
-          : variables.appType === "codex"
-            ? "Codex"
-            : variables.appType === "gemini"
-              ? "Gemini"
-              : variables.appType === "grokbuild"
-                ? "Grok Build"
-                : "OpenCode";
+      const appLabel = getAppLabel(variables.appType);
 
       toast.success(
         variables.enabled
@@ -137,9 +129,6 @@ export function useProxyStatus() {
             }),
         { closeButton: true },
       );
-
-      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
-      queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
     },
     onError: (error: Error) => {
       const detail =
@@ -151,6 +140,20 @@ export function useProxyStatus() {
           defaultValue: `操作失败: ${detail}`,
         }),
       );
+    },
+    // Pi persists desired takeover before attempting listener/runtime work.
+    // A rejected IPC can therefore still have changed authoritative state.
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.refetchQueries({
+          queryKey: proxyKeys.status,
+          type: "active",
+        }),
+        queryClient.refetchQueries({
+          queryKey: proxyKeys.takeoverStatus,
+          type: "active",
+        }),
+      ]);
     },
   });
 

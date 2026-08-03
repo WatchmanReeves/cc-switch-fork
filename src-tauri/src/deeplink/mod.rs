@@ -66,6 +66,10 @@ pub struct DeepLinkImportRequest {
     /// Optional model name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Native API identifier. Pi provider links require this explicitly;
+    /// cc-switch never infers a protocol from a URL or model name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
     /// Optional notes/description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,

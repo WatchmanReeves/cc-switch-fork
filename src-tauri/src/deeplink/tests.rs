@@ -90,6 +90,61 @@ fn test_parse_deeplink_with_notes() {
 }
 
 #[test]
+fn pi_provider_deeplink_requires_and_preserves_explicit_native_identity() {
+    use super::provider::build_provider_from_request;
+
+    let request = parse_deeplink_url(
+        "ccswitch://v1/import?resource=provider&app=pi&name=Pi%20Provider&homepage=https%3A%2F%2Fexample.com&endpoint=https%3A%2F%2Fapi.example.com%2Fv1&apiKey=sk-test&model=opaque-model&api=future-native-api",
+    )
+    .expect("parse explicit Pi provider link");
+    assert_eq!(request.app.as_deref(), Some("pi"));
+    assert_eq!(request.api.as_deref(), Some("future-native-api"));
+    assert_eq!(request.model.as_deref(), Some("opaque-model"));
+
+    let provider = build_provider_from_request(&AppType::Pi, &request).expect("build Pi provider");
+    assert_eq!(
+        provider.settings_config,
+        serde_json::json!({
+            "name": "Pi Provider",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "sk-test",
+            "api": "future-native-api",
+            "models": [{
+                "id": "opaque-model",
+                "name": "opaque-model"
+            }]
+        }),
+        "deeplinks must not invent a model, protocol, capability, pricing, or limit field"
+    );
+}
+
+#[test]
+fn pi_provider_deeplink_rejects_implicit_model_or_protocol() {
+    let missing_api = "ccswitch://v1/import?resource=provider&app=pi&name=Pi&endpoint=https%3A%2F%2Fapi.example.com&apiKey=sk-test&model=opaque-model";
+    assert!(parse_deeplink_url(missing_api)
+        .expect_err("Pi api must be explicit")
+        .to_string()
+        .contains("'api'"));
+
+    let missing_model = "ccswitch://v1/import?resource=provider&app=pi&name=Pi&endpoint=https%3A%2F%2Fapi.example.com&apiKey=sk-test&api=openai-responses";
+    assert!(parse_deeplink_url(missing_model)
+        .expect_err("Pi model must be explicit")
+        .to_string()
+        .contains("'model'"));
+}
+
+#[test]
+fn pi_prompt_deeplink_is_accepted_by_the_shared_prompt_path() {
+    let content = BASE64_STANDARD.encode("Pinned Pi AGENTS content");
+    let url = format!(
+        "ccswitch://v1/import?resource=prompt&app=pi&name=Pi%20AGENTS&content={content}&enabled=false"
+    );
+    let request = parse_deeplink_url(&url).expect("parse Pi prompt deeplink");
+    assert_eq!(request.app.as_deref(), Some("pi"));
+    assert_eq!(request.content.as_deref(), Some(content.as_str()));
+}
+
+#[test]
 fn test_parse_grokbuild_provider() {
     use super::provider::build_provider_from_request;
 
@@ -210,6 +265,7 @@ fn test_build_gemini_provider_with_model() {
         api_key: Some("test-api-key".to_string()),
         icon: None,
         model: Some("gemini-2.0-flash".to_string()),
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -263,6 +319,7 @@ fn test_build_gemini_provider_without_model() {
         api_key: Some("test-api-key".to_string()),
         icon: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -309,6 +366,7 @@ fn test_deeplink_usage_script_does_not_copy_provider_credentials() {
         api_key: Some("sk-main".to_string()),
         icon: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -356,6 +414,7 @@ fn usage_script_request(code: &str, usage_enabled: Option<bool>) -> DeepLinkImpo
         api_key: Some("sk-main".to_string()),
         icon: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -439,6 +498,7 @@ fn test_deeplink_usage_script_omits_explicit_credentials_that_match_provider() {
         api_key: Some("sk-main".to_string()),
         icon: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -487,6 +547,7 @@ fn test_deeplink_usage_script_preserves_distinct_usage_credentials() {
         api_key: Some("sk-main".to_string()),
         icon: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -540,6 +601,7 @@ fn test_parse_and_merge_config_claude() {
         api_key: None,
         icon: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -663,6 +725,7 @@ fn test_parse_and_merge_config_url_override() {
         api_key: Some("sk-new".to_string()), // URL param should override
         icon: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,
@@ -726,6 +789,7 @@ fn test_build_claude_provider_preserves_custom_env_fields() {
         icon: None,
         // URL param: must win over the same key in config (haiku-from-config)
         model: Some("main-model".to_string()),
+        api: None,
         notes: None,
         haiku_model: Some("haiku-from-url".to_string()),
         sonnet_model: None,
@@ -781,6 +845,7 @@ fn test_build_claude_provider_without_config_unchanged() {
         api_key: Some("sk".to_string()),
         icon: None,
         model: None,
+        api: None,
         notes: None,
         haiku_model: None,
         sonnet_model: None,

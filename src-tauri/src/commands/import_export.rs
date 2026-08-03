@@ -44,26 +44,56 @@ pub async fn import_config_from_file(
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     let db = state.db.clone();
-    let db_for_sync = db.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let path_buf = PathBuf::from(&filePath);
-        let backup_id = db.import_sql(&path_buf)?;
-        let warning = post_sync_warning_from_result(Ok(run_post_import_sync(db_for_sync)));
-        if let Some(msg) = warning.as_ref() {
-            log::warn!("[Import] post-import sync warning: {msg}");
+    let app_state = state.inner().clone();
+    let pi_guard = app_state
+        .proxy_service
+        .lock_switch_for_app(crate::app_config::AppType::Pi.as_str())
+        .await;
+    app_state
+        .proxy_service
+        .prepare_pi_portable_import_under_lock(&pi_guard)
+        .await
+        .map_err(|error| format!("导入前恢复 Pi 直连投影失败: {error}"))?;
+
+    let import_path = filePath.clone();
+    let import_result =
+        tauri::async_runtime::spawn_blocking(move || db.import_sql(&PathBuf::from(import_path)))
+            .await
+            .map_err(|error| AppError::Message(format!("SQL import task failed: {error}")))
+            .and_then(|result| result);
+    let backup_id = match import_result {
+        Ok(backup_id) => backup_id,
+        Err(error) => {
+            let recovery = app_state
+                .proxy_service
+                .recover_pi_after_aborted_portable_import_under_lock(&pi_guard)
+                .await;
+            return Err(match recovery {
+                Ok(()) => error.to_string(),
+                Err(recovery) => {
+                    format!("{error}; Pi gateway recovery after aborted import failed: {recovery}")
+                }
+            });
         }
-        Ok::<_, AppError>(success_payload_with_warning(backup_id, warning))
-    })
-    .await
-    .map_err(|e| format!("导入配置失败: {e}"))?
-    .map_err(|e: AppError| e.to_string())
+    };
+    drop(pi_guard);
+
+    let sync_state = app_state.clone();
+    let warning = post_sync_warning_from_result(
+        tauri::async_runtime::spawn_blocking(move || run_post_import_sync(&sync_state))
+            .await
+            .map_err(|error| error.to_string()),
+    );
+    if let Some(msg) = warning.as_ref() {
+        log::warn!("[Import] post-import sync warning: {msg}");
+    }
+    Ok(success_payload_with_warning(backup_id, warning))
 }
 
 #[tauri::command]
 pub async fn sync_current_providers_live(state: State<'_, AppState>) -> Result<Value, String> {
-    let db = state.db.clone();
+    let app_state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let app_state = AppState::new(db);
         ProviderService::sync_current_to_live(&app_state)?;
         Ok::<_, AppError>(json!({
             "success": true,
@@ -154,10 +184,50 @@ pub async fn restore_db_backup(
     filename: String,
 ) -> Result<String, String> {
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || db.restore_from_backup(&filename))
+    let app_state = state.inner().clone();
+    let pi_guard = app_state
+        .proxy_service
+        .lock_switch_for_app(crate::app_config::AppType::Pi.as_str())
+        .await;
+    app_state
+        .proxy_service
+        .prepare_pi_portable_import_under_lock(&pi_guard)
         .await
-        .map_err(|e| format!("Restore failed: {e}"))?
-        .map_err(|e: AppError| e.to_string())
+        .map_err(|error| format!("Restore preparation failed: {error}"))?;
+
+    let restore_result =
+        tauri::async_runtime::spawn_blocking(move || db.restore_from_backup(&filename))
+            .await
+            .map_err(|error| AppError::Message(format!("Restore task failed: {error}")))
+            .and_then(|result| result);
+    let restored = match restore_result {
+        Ok(restored) => restored,
+        Err(error) => {
+            let recovery = app_state
+                .proxy_service
+                .recover_pi_after_aborted_portable_import_under_lock(&pi_guard)
+                .await;
+            return Err(match recovery {
+                Ok(()) => error.to_string(),
+                Err(recovery) => {
+                    format!("{error}; Pi gateway recovery after aborted restore failed: {recovery}")
+                }
+            });
+        }
+    };
+    drop(pi_guard);
+
+    let sync_state = app_state.clone();
+    match tauri::async_runtime::spawn_blocking(move || run_post_import_sync(&sync_state)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            log::warn!("[Restore] database restored but post-restore sync failed: {error}");
+        }
+        Err(error) => {
+            log::warn!("[Restore] database restored but post-restore sync task failed: {error}");
+        }
+    }
+    Ok(restored)
 }
 
 /// Rename a database backup file

@@ -10,7 +10,8 @@ export type AppType =
   | "grokbuild"
   | "opencode"
   | "openclaw"
-  | "hermes";
+  | "hermes"
+  | "pi";
 
 /** Skill 应用启用状态 */
 export interface SkillApps {
@@ -22,6 +23,25 @@ export interface SkillApps {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  pi: boolean;
+}
+
+export type PiSkillOwnership = "absent" | "owned" | "foreign" | "stale";
+export type PiSkillDiscovery = "absent" | "active" | "shadowed" | "invalid";
+
+/**
+ * Pi 的期望状态、受管部署所有权与 pinned discovery 实际状态。
+ *
+ * `effectivelyDiscovered` 是 active 的唯一展示依据；`desiredEnabled`
+ * 仅表示用户期望，不能代替 Pi 实际发现结果。
+ */
+export interface PiSkillStatus {
+  desiredEnabled: boolean;
+  ownedDeployment: boolean;
+  effectivelyDiscovered: boolean;
+  ownership: PiSkillOwnership;
+  discovery: PiSkillDiscovery;
+  issue?: string;
 }
 
 /** 已安装的 Skill（v3.10.0+ 统一结构） */
@@ -141,6 +161,11 @@ export const skillsApi = {
   /** 获取所有已安装的 Skills */
   async getInstalled(): Promise<InstalledSkill[]> {
     return await invoke("get_installed_skills");
+  },
+
+  /** 获取 Pi Skill 的期望、所有权与实际 discovery 状态 */
+  async getPiStatuses(): Promise<Record<string, PiSkillStatus>> {
+    return await invoke("get_pi_skill_statuses");
   },
 
   /** 获取可恢复的 Skill 备份列表 */

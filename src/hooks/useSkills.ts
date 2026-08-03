@@ -10,11 +10,22 @@ import {
   type DiscoverableSkill,
   type ImportSkillSelection,
   type InstalledSkill,
+  type PiSkillStatus,
   type SkillUpdateInfo,
   type SkillsShSearchResult,
 } from "@/lib/api/skills";
 import type { AppId } from "@/lib/api/types";
 import { mergeImportedSkills } from "@/hooks/useSkills.helpers";
+
+const PI_SKILL_STATUSES_QUERY_KEY = ["skills", "pi-statuses"] as const;
+
+function invalidatePiSkillStatuses(
+  queryClient: ReturnType<typeof useQueryClient>,
+) {
+  void queryClient.invalidateQueries({
+    queryKey: PI_SKILL_STATUSES_QUERY_KEY,
+  });
+}
 
 /**
  * 查询所有已安装的 Skills
@@ -27,6 +38,17 @@ export function useInstalledSkills() {
     queryFn: () => skillsApi.getInstalled(),
     staleTime: Infinity,
     placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * Pi 的实际 discovery 状态来自文件系统 inspection，不从 apps.pi 推导。
+ */
+export function usePiSkillStatuses() {
+  return useQuery({
+    queryKey: PI_SKILL_STATUSES_QUERY_KEY,
+    queryFn: () => skillsApi.getPiStatuses(),
+    staleTime: 10 * 1000,
   });
 }
 
@@ -105,6 +127,7 @@ export function useInstallSkill() {
           });
         },
       );
+      invalidatePiSkillStatuses(queryClient);
     },
   });
 }
@@ -143,6 +166,7 @@ export function useUninstallSkill() {
           });
         },
       );
+      invalidatePiSkillStatuses(queryClient);
     },
   });
 }
@@ -160,6 +184,7 @@ export function useRestoreSkillBackup() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["skills", "installed"] });
       queryClient.invalidateQueries({ queryKey: ["skills", "backups"] });
+      invalidatePiSkillStatuses(queryClient);
     },
   });
 }
@@ -181,6 +206,7 @@ export function useToggleSkillApp() {
     }) => skillsApi.toggleApp(id, app, enabled),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["skills", "installed"] });
+      invalidatePiSkillStatuses(queryClient);
     },
   });
 }
@@ -220,6 +246,7 @@ export function useImportSkillsFromApps() {
       );
       // 刷新 unmanaged 列表（已被导入的应该移除）
       queryClient.invalidateQueries({ queryKey: ["skills", "unmanaged"] });
+      invalidatePiSkillStatuses(queryClient);
     },
   });
 }
@@ -286,6 +313,7 @@ export function useInstallSkillsFromZip() {
           return [...oldData, ...installedSkills];
         },
       );
+      invalidatePiSkillStatuses(queryClient);
     },
   });
 }
@@ -328,6 +356,7 @@ export function useUpdateSkill() {
           return oldData.filter((u) => u.id !== updatedSkill.id);
         },
       );
+      invalidatePiSkillStatuses(queryClient);
     },
   });
 }
@@ -356,6 +385,7 @@ export function useSearchSkillsSh(
 
 export type {
   InstalledSkill,
+  PiSkillStatus,
   DiscoverableSkill,
   ImportSkillSelection,
   SkillBackupEntry,

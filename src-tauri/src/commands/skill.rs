@@ -11,7 +11,9 @@ use crate::services::skill::{
     SkillService, SkillStorageLocation, SkillUninstallResult, SkillUpdateInfo,
     SkillsShSearchResult,
 };
+use crate::services::skill_deployment::{PiSkillDeploymentService, SkillAppStatus};
 use crate::store::AppState;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::State;
@@ -30,6 +32,13 @@ fn parse_app_type(app: &str) -> Result<AppType, String> {
 #[tauri::command]
 pub fn get_installed_skills(app_state: State<'_, AppState>) -> Result<Vec<InstalledSkill>, String> {
     SkillService::get_all_installed(&app_state.db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_pi_skill_statuses(
+    app_state: State<'_, AppState>,
+) -> Result<BTreeMap<String, SkillAppStatus>, String> {
+    PiSkillDeploymentService::inspect_all(&app_state.db).map_err(|error| error.to_string())
 }
 
 #[tauri::command]

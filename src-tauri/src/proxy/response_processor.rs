@@ -254,11 +254,11 @@ pub async fn handle_non_streaming(
                 spawn_log_usage(
                     state,
                     ctx,
+                    parser_config.input_token_semantics,
                     usage,
                     &model,
                     &ctx.request_model,
                     status.as_u16(),
-                    false,
                 );
             } else {
                 let model = json_value
@@ -271,11 +271,11 @@ pub async fn handle_non_streaming(
                 spawn_log_usage(
                     state,
                     ctx,
+                    parser_config.input_token_semantics,
                     TokenUsage::default(),
                     &model,
                     &ctx.request_model,
                     status.as_u16(),
-                    false,
                 );
                 log::debug!(
                     "[{}] 未能解析 usage 信息，跳过记录",
@@ -291,11 +291,11 @@ pub async fn handle_non_streaming(
             spawn_log_usage(
                 state,
                 ctx,
+                parser_config.input_token_semantics,
                 TokenUsage::default(),
                 ctx.outbound_model.as_deref().unwrap_or(&ctx.request_model),
                 &ctx.request_model,
                 status.as_u16(),
-                false,
             );
         }
     } else {
@@ -488,6 +488,7 @@ pub(crate) fn create_usage_collector(
     let start_time = ctx.start_time;
     let stream_parser = parser_config.stream_parser;
     let model_extractor = parser_config.model_extractor;
+    let input_token_semantics = parser_config.input_token_semantics;
     let session_id = ctx.session_id.clone();
 
     Some(SseUsageCollector::new(
@@ -512,6 +513,7 @@ pub(crate) fn create_usage_collector(
                         &model,
                         &request_model,
                         &outbound_model,
+                        input_token_semantics,
                         usage,
                         latency_ms,
                         first_token_ms,
@@ -538,6 +540,7 @@ pub(crate) fn create_usage_collector(
                         &model,
                         &request_model,
                         &outbound_model,
+                        input_token_semantics,
                         TokenUsage::default(),
                         latency_ms,
                         first_token_ms,
@@ -557,11 +560,11 @@ pub(crate) fn create_usage_collector(
 fn spawn_log_usage(
     state: &ProxyState,
     ctx: &RequestContext,
+    input_token_semantics: super::usage::InputTokenSemantics,
     usage: TokenUsage,
     model: &str,
     request_model: &str,
     status_code: u16,
-    is_streaming: bool,
 ) {
     // Check enable_logging before spawning the log task
     if let Ok(config) = state.config.try_read() {
@@ -591,10 +594,11 @@ fn spawn_log_usage(
             &model,
             &request_model,
             &outbound_model,
+            input_token_semantics,
             usage,
             latency_ms,
             None,
-            is_streaming,
+            false,
             status_code,
             Some(session_id),
         )
@@ -624,6 +628,7 @@ async fn log_usage_internal(
     model: &str,
     request_model: &str,
     outbound_model: &str,
+    input_token_semantics: super::usage::InputTokenSemantics,
     usage: TokenUsage,
     latency_ms: u64,
     first_token_ms: Option<u64>,
@@ -661,6 +666,7 @@ async fn log_usage_internal(
         model.to_string(),
         request_model.to_string(),
         pricing_model.to_string(),
+        input_token_semantics,
         usage,
         multiplier,
         latency_ms,
@@ -1001,6 +1007,8 @@ mod tests {
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle: None,
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+            pi_runtime: Arc::new(crate::proxy::pi_runtime::PiRuntimeStore::default()),
+            pi_server_generation: 0,
         }
     }
 
@@ -1072,6 +1080,7 @@ mod tests {
             "resp-model",
             "req-model",
             "req-model",
+            crate::proxy::usage::InputTokenSemantics::FreshExcludesCache,
             usage,
             10,
             None,
@@ -1142,6 +1151,7 @@ mod tests {
             "resp-model",
             "req-model",
             "outbound-model",
+            crate::proxy::usage::InputTokenSemantics::FreshExcludesCache,
             usage,
             10,
             None,
@@ -1222,6 +1232,7 @@ mod tests {
             "resp-model",
             "req-model",
             "req-model",
+            crate::proxy::usage::InputTokenSemantics::FreshExcludesCache,
             usage,
             10,
             None,

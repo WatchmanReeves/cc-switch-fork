@@ -13,6 +13,12 @@ const importSkillsMock = vi.fn();
 const installFromZipMock = vi.fn();
 const deleteSkillBackupMock = vi.fn();
 const restoreSkillBackupMock = vi.fn();
+const skillsHookState = vi.hoisted(() => ({
+  installed: [] as unknown[],
+  piStatuses: {} as Record<string, unknown>,
+  piStatusesLoading: false,
+  piStatusesError: false,
+}));
 
 vi.mock("sonner", () => ({
   toast: {
@@ -24,8 +30,13 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/hooks/useSkills", () => ({
   useInstalledSkills: () => ({
-    data: [],
+    data: skillsHookState.installed,
     isLoading: false,
+  }),
+  usePiSkillStatuses: () => ({
+    data: skillsHookState.piStatuses,
+    isLoading: skillsHookState.piStatusesLoading,
+    isError: skillsHookState.piStatusesError,
   }),
   useSkillBackups: () => ({
     data: [],
@@ -94,6 +105,10 @@ describe("UnifiedSkillsPanel", () => {
     installFromZipMock.mockReset();
     deleteSkillBackupMock.mockReset();
     restoreSkillBackupMock.mockReset();
+    skillsHookState.installed = [];
+    skillsHookState.piStatuses = {};
+    skillsHookState.piStatusesLoading = false;
+    skillsHookState.piStatusesError = false;
   });
 
   it("opens the import dialog without crashing when app toggles render", async () => {
@@ -128,6 +143,63 @@ describe("UnifiedSkillsPanel", () => {
           apps: expect.objectContaining({ grokbuild: true }),
         },
       ]);
+    });
+  });
+
+  it("renders Pi active state from inspection and toggles the desired state", async () => {
+    skillsHookState.installed = [
+      {
+        id: "skill-1",
+        name: "Pi Skill",
+        directory: "pi-skill",
+        apps: {
+          claude: false,
+          codex: false,
+          gemini: false,
+          opencode: false,
+          openclaw: false,
+          hermes: false,
+          pi: true,
+        },
+        installedAt: 1,
+        updatedAt: 1,
+      },
+    ];
+    skillsHookState.piStatuses = {
+      "skill-1": {
+        desiredEnabled: true,
+        ownedDeployment: false,
+        effectivelyDiscovered: false,
+        ownership: "foreign",
+        discovery: "absent",
+        issue: "collision",
+      },
+    };
+    toggleSkillAppMock.mockResolvedValue(true);
+
+    render(
+      <UnifiedSkillsPanel
+        onOpenDiscovery={() => {}}
+        currentApp="pi"
+      />,
+    );
+
+    expect(
+      screen.getByText("Pi: skills.piStatus.foreignConflict"),
+    ).toBeInTheDocument();
+    const piToggle = screen.getByRole("button", { name: "Pi" });
+    expect(piToggle).toHaveAttribute("aria-pressed", "false");
+
+    await act(async () => {
+      piToggle.click();
+    });
+
+    await waitFor(() => {
+      expect(toggleSkillAppMock).toHaveBeenCalledWith({
+        id: "skill-1",
+        app: "pi",
+        enabled: false,
+      });
     });
   });
 });

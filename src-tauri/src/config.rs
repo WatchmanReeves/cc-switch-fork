@@ -295,6 +295,22 @@ pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
 
 /// 原子写入：写入临时文件后 rename 替换，避免半写状态
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
+    atomic_write_durable(path, data, None)
+}
+
+/// Durable same-directory atomic replacement.
+///
+/// Existing permissions are preserved. `new_file_mode` controls only a newly
+/// created Unix file (settings and other local secrets pass `0o600`). The
+/// temporary file is created exclusively, synced before replacement, and the
+/// containing directory is synced afterwards on Unix.
+pub(crate) fn atomic_write_durable(
+    path: &Path,
+    data: &[u8],
+    new_file_mode: Option<u32>,
+) -> Result<(), AppError> {
+    #[cfg(not(unix))]
+    let _ = new_file_mode;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
@@ -302,51 +318,95 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     let parent = path
         .parent()
         .ok_or_else(|| AppError::Config("无效的路径".to_string()))?;
-    let mut tmp = parent.to_path_buf();
     let file_name = path
         .file_name()
         .ok_or_else(|| AppError::Config("无效的文件名".to_string()))?
         .to_string_lossy()
         .to_string();
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    tmp.push(format!("{file_name}.tmp.{ts}"));
+    let tmp = parent.join(format!(
+        ".{file_name}.{}.tmp",
+        uuid::Uuid::new_v4().simple()
+    ));
 
-    {
-        let mut f = fs::File::create(&tmp).map_err(|e| AppError::io(&tmp, e))?;
-        f.write_all(data).map_err(|e| AppError::io(&tmp, e))?;
-        f.flush().map_err(|e| AppError::io(&tmp, e))?;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(path) {
-            let perm = meta.permissions().mode();
-            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(perm));
+    let result = (|| -> Result<(), AppError> {
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(new_file_mode.unwrap_or(0o666));
         }
-    }
+        let mut file = options
+            .open(&tmp)
+            .map_err(|error| AppError::io(&tmp, error))?;
+        file.write_all(data)
+            .map_err(|error| AppError::io(&tmp, error))?;
+        file.flush().map_err(|error| AppError::io(&tmp, error))?;
+        file.sync_all().map_err(|error| AppError::io(&tmp, error))?;
+        drop(file);
 
-    #[cfg(windows)]
-    {
-        // Windows 上 rename 目标存在会失败，先移除再重命名（尽量接近原子性）
-        if path.exists() {
-            let _ = fs::remove_file(path);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(path)
+                .map(|metadata| metadata.permissions().mode())
+                .unwrap_or_else(|_| new_file_mode.unwrap_or(0o666));
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))
+                .map_err(|error| AppError::io(&tmp, error))?;
         }
-        fs::rename(&tmp, path).map_err(|e| AppError::IoContext {
-            context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-            source: e,
-        })?;
-    }
 
-    #[cfg(not(windows))]
-    {
-        fs::rename(&tmp, path).map_err(|e| AppError::IoContext {
-            context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-            source: e,
-        })?;
+        replace_file_atomically(&tmp, path)?;
+        #[cfg(unix)]
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| AppError::io(parent, error))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(temp_path: &Path, path: &Path) -> Result<(), AppError> {
+    fs::rename(temp_path, path).map_err(|source| AppError::IoContext {
+        context: format!(
+            "原子替换失败: {} -> {}",
+            temp_path.display(),
+            path.display()
+        ),
+        source,
+    })
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(temp_path: &Path, path: &Path) -> Result<(), AppError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = temp_path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: both buffers are NUL-terminated and remain alive for the
+    // duration of this synchronous Win32 call.
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(AppError::IoContext {
+            context: format!(
+                "原子替换失败: {} -> {}",
+                temp_path.display(),
+                path.display()
+            ),
+            source: std::io::Error::last_os_error(),
+        });
     }
     Ok(())
 }

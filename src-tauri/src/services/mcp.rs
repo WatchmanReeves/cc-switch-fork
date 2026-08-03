@@ -147,6 +147,13 @@ impl McpService {
             AppType::Hermes => {
                 mcp::sync_single_server_to_hermes(&Default::default(), &server.id, &server.server)?;
             }
+            AppType::Pi => {
+                return Err(AppError::localized(
+                    "mcp.pi.unsupported",
+                    "固定版本的 Pi 核心没有原生 MCP 注册表",
+                    "The pinned Pi core has no native MCP registry",
+                ));
+            }
         }
         Ok(())
     }
@@ -182,6 +189,13 @@ impl McpService {
             }
             AppType::Hermes => {
                 mcp::remove_server_from_hermes(id)?;
+            }
+            AppType::Pi => {
+                return Err(AppError::localized(
+                    "mcp.pi.unsupported",
+                    "固定版本的 Pi 核心没有原生 MCP 注册表",
+                    "The pinned Pi core has no native MCP registry",
+                ));
             }
         }
         Ok(())
@@ -227,7 +241,10 @@ impl McpService {
         servers: &IndexMap<String, McpServer>,
         app: &AppType,
     ) -> Result<(), AppError> {
-        if matches!(app, AppType::OpenClaw | AppType::ClaudeDesktop) {
+        if matches!(
+            app,
+            AppType::OpenClaw | AppType::ClaudeDesktop | AppType::Pi
+        ) {
             return Ok(());
         }
 
@@ -542,5 +559,34 @@ impl McpService {
                 failures.join("; ")
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::Database;
+    use std::sync::Arc;
+
+    #[test]
+    fn global_mcp_projection_treats_pi_as_explicitly_not_applicable() {
+        let state = AppState::new(Arc::new(Database::memory().expect("database")));
+        let mut servers = IndexMap::new();
+        servers.insert(
+            "example".to_string(),
+            McpServer {
+                id: "example".to_string(),
+                name: "Example".to_string(),
+                server: serde_json::json!({"command": "example"}),
+                apps: Default::default(),
+                description: None,
+                homepage: None,
+                docs: None,
+                tags: Vec::new(),
+            },
+        );
+
+        McpService::project_servers_to_app(&state, &servers, &AppType::Pi)
+            .expect("Pi is intentionally outside the pinned core MCP registry");
     }
 }

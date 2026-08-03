@@ -112,4 +112,21 @@ describe("ImportExportSection Component", () => {
     expect(screen.getByText("settings.importFailed")).toBeInTheDocument();
     expect(screen.getByText("Parse failed")).toBeInTheDocument();
   });
+
+  it("shows the Pi portability boundary and the concrete partial-sync failure", () => {
+    render(
+      <ImportExportSection
+        {...baseProps}
+        status="partial-success"
+        errorMessage="unclaimed native key 'occupied' already exists"
+      />,
+    );
+
+    expect(
+      screen.getByText("settings.piImportExportBoundary"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("unclaimed native key 'occupied' already exists"),
+    ).toBeInTheDocument();
+  });
 });

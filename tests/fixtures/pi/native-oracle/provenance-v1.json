@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "pi": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "commit": "ab366ebe94cacd419d986be454f12b1b9913aaca"
+  },
+  "typeboxVersion": "1.3.7",
+  "sources": {
+    "modelConfig": {
+      "path": "packages/coding-agent/src/core/model-config.ts",
+      "sha256": "62141770d675ad6357a72e07354355f0eda29281c0e5be1b48d2360f341c7360"
+    },
+    "providerComposer": {
+      "path": "packages/coding-agent/src/core/provider-composer.ts",
+      "sha256": "17308a4179b330526eabf6c917fa13e9dbd9ece90d1555b870e87d39b5b60d9d"
+    },
+    "resolveConfigValue": {
+      "path": "packages/coding-agent/src/core/resolve-config-value.ts",
+      "sha256": "0f53dad47fe5d5d8837c022b7951ccd3bd5a9b577bd662f0986272110e83bcc7"
+    }
+  },
+  "artifacts": {
+    "provider-schema.snapshot.json": "e498c9f1b344eee1bd3c3ba74d1b648dcb835378cfad92800ec80078b825745c",
+    "raw-oracle-v1.json": "5aaa37160f96a0fe50867d900ca38c73f13aba769e156a883324368d9dbeeb9a",
+    "composer-oracle-v1.json": "f7e54bb84e5fd6d50e5762dc304834410fa73ef608c2f9c42475c5983f8e0cf5",
+    "transport-oracle-v1.json": "b2c816e53b60da5cd6352d2c23934939e9f6dd0077971488fe9dd36fa723e855",
+    "field-coverage-v1.json": "b8b85e611cf1dbef86c611df185ba8ac2d64160087d0c6e47747f838a0fafe42"
+  },
+  "harness": {
+    "path": "scripts/generate-pi-native-oracle.mjs",
+    "sha256": "f7a138831284b48ef655ef500a63313f0fc89cf08d319094895027ba4777cc20",
+    "upstreamEntry": "packages/coding-agent/src/core/provider-composer.ts",
+    "entryFunctions": [
+      "composeModelProvider",
+      "Provider.getModels",
+      "resolveCompatibilityRequestConfig",
+      "Provider.auth.apiKey.resolve"
+    ],
+    "bundler": "esbuild@0.28.1",
+    "transportShims": {
+      "pi-ai": "debdf80a40ad2086467c7c3ed6fe43d6167caa85e5bff86e10f28cc36d8fcc53",
+      "pi-ai/compat": "533cd8f8a242bb25b42db8249abcb539daf30889ea748b5114c177e44c3849d2"
+    },
+    "assertion": "expected composer outputs were captured by executing the pinned upstream entry functions; transport shims are unreachable during credential-blind model composition",
+    "transportResolver": {
+      "upstreamEntry": "packages/coding-agent/src/core/resolve-config-value.ts",
+      "entryFunctions": [
+        "resolveConfigValueOrThrow",
+        "resolveHeadersOrThrow"
+      ],
+      "bundler": "esbuild@0.28.1",
+      "platform": "linux"
+    }
+  },
+  "uncoveredSemantics": [
+    {
+      "id": "builtin-overlay-without-pinned-base-catalog",
+      "unavailableContext": "pinned built-in Provider instance and model catalog",
+      "rustExpectedStatus": "unknown",
+      "reasonCode": "catalog_required"
+    },
+    {
+      "id": "extension-overlay-without-extension-registration",
+      "unavailableContext": "extension ProviderConfigInput and registered model catalog",
+      "rustExpectedStatus": "unknown",
+      "reasonCode": "catalog_required"
+    },
+    {
+      "id": "radius-oauth-credential-lifecycle",
+      "unavailableContext": "interactive Radius login, refresh credentials, and network exchange",
+      "rustExpectedStatus": "direct_only",
+      "reasonCode": "missing_gateway_credential"
+    }
+  ],
+  "schemaOperatorInventory": [
+    "anyOf",
+    "const",
+    "items",
+    "minLength",
+    "patternProperties",
+    "properties",
+    "required",
+    "type"
+  ],
+  "evaluatorOperatorAllowlist": [
+    "additionalProperties",
+    "anyOf",
+    "const",
+    "items",
+    "minLength",
+    "patternProperties",
+    "properties",
+    "required",
+    "type"
+  ]
+}

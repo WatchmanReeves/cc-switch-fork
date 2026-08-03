@@ -160,6 +160,7 @@ pub(crate) fn build_provider_from_request(
         AppType::OpenCode => build_opencode_settings(request),
         AppType::OpenClaw => build_additive_app_settings(request),
         AppType::Hermes => build_hermes_settings(request),
+        AppType::Pi => build_pi_settings(request)?,
     };
 
     // Build usage script configuration if provided
@@ -589,6 +590,45 @@ fn build_hermes_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
     }
 
     json!(config)
+}
+
+/// Pi deep links intentionally carry one explicit model, endpoint and native
+/// API identifier. Map only that closed subset; richer Pi catalogs use native
+/// inspection/import or the Pi editor. No URL/model heuristic may invent the
+/// protocol or model identity.
+fn build_pi_settings(request: &DeepLinkImportRequest) -> Result<serde_json::Value, AppError> {
+    let endpoint = get_primary_endpoint(request);
+    let model = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "Pi provider deep links require a non-empty model identifier".to_string(),
+            )
+        })?;
+    let api = request
+        .api
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "Pi provider deep links require an explicit API identifier".to_string(),
+            )
+        })?;
+
+    Ok(json!({
+        "name": request.name,
+        "baseUrl": endpoint,
+        "apiKey": request.api_key,
+        "api": api,
+        "models": [{
+            "id": model,
+            "name": model
+        }]
+    }))
 }
 
 // =============================================================================

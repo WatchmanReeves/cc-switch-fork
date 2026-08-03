@@ -20,6 +20,7 @@ use crate::database::{
 use crate::error::AppError;
 use crate::provider::{Provider, ProviderMutationInput, UsageResult};
 use crate::services::mcp::McpService;
+use crate::services::pi_catalog::{PiCatalogCoordinator, PiCatalogMutation};
 use crate::settings::CustomEndpoint;
 use crate::store::AppState;
 
@@ -478,6 +479,32 @@ mod tests {
         }
     }
 
+    fn pi_provider(id: &str) -> Provider {
+        Provider {
+            id: id.to_string(),
+            name: format!("Pi Provider {id}"),
+            settings_config: json!({
+                "name": format!("Pi Provider {id}"),
+                "api": "openai-responses",
+                "baseUrl": "https://pi.example/v1",
+                "apiKey": "test-key",
+                "models": [
+                    {"id": "model-a", "name": "Model A"},
+                    {"id": "model-b", "name": "Model B"}
+                ]
+            }),
+            website_url: None,
+            category: Some("custom".to_string()),
+            created_at: Some(1),
+            sort_index: Some(0),
+            notes: None,
+            meta: None,
+            icon: Some("pi".to_string()),
+            icon_color: None,
+            in_failover_queue: false,
+        }
+    }
+
     fn opencode_provider(id: &str) -> Provider {
         Provider {
             id: id.to_string(),
@@ -628,6 +655,174 @@ mod tests {
                 provider_snapshot(state, "opencode", "typed-create"),
                 before,
                 "row, endpoints, current and failover state remain byte-logically unchanged"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn pi_provider_service_create_hydrates_all_endpoints_and_publishes_native_default() {
+        with_test_home(|state, home| {
+            let original_settings = crate::settings::get_settings();
+            let mut isolated_settings = original_settings.clone();
+            isolated_settings.pi_config_dir = Some(
+                home.join(".pi")
+                    .join("agent")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            isolated_settings.current_provider_pi = None;
+            crate::settings::update_settings(isolated_settings)
+                .expect("install isolated Pi settings");
+
+            let outcome = (|| -> Result<_, AppError> {
+                let expected_endpoints = HashMap::from([
+                    (
+                        "https://one.pi.example".to_string(),
+                        endpoint("https://one.pi.example", None, Some(11)),
+                    ),
+                    (
+                        "https://two.pi.example".to_string(),
+                        endpoint("https://two.pi.example", Some(20), None),
+                    ),
+                ]);
+                let mut provider = pi_provider("managed-pi");
+                provider.meta = Some(ProviderMeta {
+                    custom_endpoints: expected_endpoints.clone(),
+                    ..Default::default()
+                });
+                ProviderService::add(
+                    state,
+                    AppType::Pi,
+                    provider_to_mutation_input(provider),
+                    false,
+                )?;
+
+                let aggregate = state
+                    .db
+                    .get_provider_aggregate("pi", "managed-pi")?
+                    .ok_or_else(|| AppError::NotFound("managed Pi aggregate".to_string()))?;
+                let hydrated = aggregate.endpoints.into_iter().collect::<HashMap<_, _>>();
+                let models: Value = serde_json::from_slice(
+                    &fs::read(home.join(".pi/agent/models.json"))
+                        .map_err(|error| AppError::io(home, error))?,
+                )
+                .map_err(|error| AppError::json(home, error))?;
+                let defaults = crate::pi_config::native_settings::read_pi_native_defaults()?;
+                Ok((expected_endpoints, hydrated, models, defaults))
+            })();
+
+            crate::settings::update_settings(original_settings).expect("restore process settings");
+            let (expected, hydrated, models, defaults) = outcome.expect("Pi service create");
+            assert_eq!(hydrated, expected);
+            assert_eq!(
+                models.pointer("/providers/managed-pi/models/0/id"),
+                Some(&json!("model-a"))
+            );
+            assert_eq!(defaults.default_provider.as_deref(), Some("managed-pi"));
+            assert_eq!(defaults.default_model.as_deref(), Some("model-a"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn pi_provider_service_update_rehomes_a_removed_active_model() {
+        with_test_home(|state, home| {
+            let original_settings = crate::settings::get_settings();
+            let mut isolated_settings = original_settings.clone();
+            isolated_settings.pi_config_dir = Some(
+                home.join(".pi")
+                    .join("agent")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            isolated_settings.current_provider_pi = None;
+            crate::settings::update_settings(isolated_settings)
+                .expect("install isolated Pi settings");
+
+            let outcome = (|| -> Result<_, AppError> {
+                let provider = pi_provider("managed-pi-update");
+                ProviderService::add(
+                    state,
+                    AppType::Pi,
+                    provider_to_mutation_input(provider.clone()),
+                    false,
+                )?;
+
+                let mut updated = provider;
+                updated.settings_config["models"] = json!([{"id": "model-b", "name": "Model B"}]);
+                ProviderService::update(
+                    state,
+                    AppType::Pi,
+                    Some("managed-pi-update"),
+                    provider_to_mutation_input(updated),
+                )?;
+
+                let defaults = crate::pi_config::native_settings::read_pi_native_defaults()?;
+                let models: Value = serde_json::from_slice(
+                    &fs::read(home.join(".pi/agent/models.json"))
+                        .map_err(|error| AppError::io(home, error))?,
+                )
+                .map_err(|error| AppError::json(home, error))?;
+                Ok((defaults, models))
+            })();
+
+            crate::settings::update_settings(original_settings).expect("restore process settings");
+            let (defaults, models) = outcome.expect("Pi service update");
+            assert_eq!(
+                defaults.default_provider.as_deref(),
+                Some("managed-pi-update")
+            );
+            assert_eq!(defaults.default_model.as_deref(), Some("model-b"));
+            assert_eq!(
+                models.pointer("/providers/managed-pi-update/models"),
+                Some(&json!([{"id": "model-b", "name": "Model B"}]))
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn pi_provider_service_current_follows_the_native_default_after_external_edit() {
+        with_test_home(|state, home| {
+            let original_settings = crate::settings::get_settings();
+            let mut isolated_settings = original_settings.clone();
+            isolated_settings.pi_config_dir = Some(
+                home.join(".pi")
+                    .join("agent")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            isolated_settings.current_provider_pi = None;
+            crate::settings::update_settings(isolated_settings)
+                .expect("install isolated Pi settings");
+
+            let outcome = (|| -> Result<_, AppError> {
+                for provider_id in ["native-first", "native-second"] {
+                    ProviderService::add(
+                        state,
+                        AppType::Pi,
+                        provider_to_mutation_input(pi_provider(provider_id)),
+                        false,
+                    )?;
+                }
+                assert_eq!(
+                    state.db.get_current_provider("pi")?.as_deref(),
+                    Some("native-first")
+                );
+                crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+                    "native-second",
+                    "model-b",
+                )?;
+
+                ProviderService::current(state, AppType::Pi)
+            })();
+
+            crate::settings::update_settings(original_settings).expect("restore process settings");
+            assert_eq!(
+                outcome.expect("resolve current Pi provider"),
+                "native-second",
+                "the UI current marker must follow Pi's live settings, not a stale DB marker"
             );
         });
     }
@@ -2567,8 +2762,13 @@ requires_openai_auth = true
             ..Default::default()
         });
 
-        ProviderService::update(&state, AppType::ClaudeDesktop, None, updated.clone())
-            .expect("update current provider");
+        ProviderService::update(
+            &state,
+            AppType::ClaudeDesktop,
+            None,
+            provider_to_mutation_input(updated.clone()),
+        )
+        .expect("update current provider");
 
         let backup = db
             .get_live_backup("claude-desktop")
@@ -3404,6 +3604,10 @@ impl ProviderService {
         if app_type.is_additive_mode() {
             return Ok(String::new());
         }
+        if matches!(app_type, AppType::Pi) {
+            return PiCatalogCoordinator::current_native_provider(state)
+                .map(|provider| provider.unwrap_or_default());
+        }
         crate::settings::get_effective_current_provider(&state.db, &app_type)
             .map(|opt| opt.unwrap_or_default())
     }
@@ -3415,6 +3619,18 @@ impl ProviderService {
         input: ProviderMutationInput,
         add_to_live: bool,
     ) -> Result<bool, AppError> {
+        if matches!(app_type, AppType::Pi) {
+            let provider_key = input.id.clone();
+            PiCatalogCoordinator::apply(
+                state,
+                PiCatalogMutation::CreateProvider {
+                    input,
+                    provider_key,
+                    activate_if_first: true,
+                },
+            )?;
+            return Ok(true);
+        }
         let _provider_mutation_guard = lock_additive_provider_mutation(state, &app_type);
         let mut provider: Provider = input.into();
         // Normalize Claude model keys
@@ -3473,6 +3689,16 @@ impl ProviderService {
         // Reject endpoint-bearing edit payloads before any live or DB side
         // effect. Endpoints have their own typed mutation API.
         ProviderRowUpdate::from_input(&input)?;
+        if matches!(app_type, AppType::Pi) {
+            let original_id = original_id.unwrap_or(input.id.as_str());
+            if original_id != input.id {
+                return Err(AppError::InvalidInput(
+                    "Pi provider identity and native projection key cannot be renamed".to_string(),
+                ));
+            }
+            PiCatalogCoordinator::apply(state, PiCatalogMutation::UpdateProvider { input })?;
+            return Ok(true);
+        }
         let _provider_mutation_guard = lock_additive_provider_mutation(state, &app_type);
         let mut provider: Provider = input.into();
         let original_id = original_id.unwrap_or(provider.id.as_str()).to_string();
@@ -3713,6 +3939,15 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
+        if matches!(app_type, AppType::Pi) {
+            PiCatalogCoordinator::apply(
+                state,
+                PiCatalogMutation::DeleteProvider {
+                    provider_id: id.to_string(),
+                },
+            )?;
+            return Ok(());
+        }
         let _provider_mutation_guard = lock_additive_provider_mutation(state, &app_type);
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
@@ -3853,6 +4088,32 @@ impl ProviderService {
     ///    d. Write target provider config to live files
     ///    e. Sync MCP configuration
     pub fn switch(state: &AppState, app_type: AppType, id: &str) -> Result<SwitchResult, AppError> {
+        if matches!(app_type, AppType::Pi) {
+            let provider = state
+                .db
+                .get_provider_aggregate(AppType::Pi.as_str(), id)?
+                .ok_or_else(|| AppError::NotFound(format!("Pi provider '{id}'")))?;
+            let config: crate::pi_config::model::PiManagedProviderConfig =
+                serde_json::from_value(provider.provider.settings_config).map_err(|error| {
+                    AppError::Config(format!("managed Pi provider '{id}' is invalid: {error}"))
+                })?;
+            let model_id = config
+                .models
+                .first()
+                .ok_or_else(|| {
+                    AppError::InvalidInput(format!("Pi provider '{id}' has no selectable models"))
+                })?
+                .id
+                .clone();
+            PiCatalogCoordinator::apply(
+                state,
+                PiCatalogMutation::SetDefault {
+                    provider_id: id.to_string(),
+                    model_id,
+                },
+            )?;
+            return Ok(SwitchResult::default());
+        }
         // The same per-app lock also guards additive provider key changes and
         // bulk live sync.  Acquire it before observing the provider map so a
         // queued rename cannot leave this switch holding a stale source key.
@@ -4393,6 +4654,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi => Ok(String::new()), // Pi owns a shared exact-key catalog, not snippets
         }
     }
 
@@ -4410,6 +4672,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi => Ok(String::new()),
         }
     }
 
@@ -4979,6 +5242,16 @@ impl ProviderService {
         provider_id: &str,
         url: String,
     ) -> Result<(), AppError> {
+        if matches!(app_type, AppType::Pi) {
+            PiCatalogCoordinator::apply(
+                state,
+                PiCatalogMutation::AddEndpoint {
+                    provider_id: provider_id.to_string(),
+                    url,
+                },
+            )?;
+            return Ok(());
+        }
         endpoints::add_custom_endpoint(state, app_type, provider_id, url)
     }
 
@@ -4989,6 +5262,16 @@ impl ProviderService {
         provider_id: &str,
         url: String,
     ) -> Result<(), AppError> {
+        if matches!(app_type, AppType::Pi) {
+            PiCatalogCoordinator::apply(
+                state,
+                PiCatalogMutation::RemoveEndpoint {
+                    provider_id: provider_id.to_string(),
+                    url,
+                },
+            )?;
+            return Ok(());
+        }
         endpoints::remove_custom_endpoint(state, app_type, provider_id, url)
     }
 
@@ -4999,6 +5282,13 @@ impl ProviderService {
         provider_id: &str,
         url: String,
     ) -> Result<(), AppError> {
+        let _pi_switch_guard = matches!(app_type, AppType::Pi).then(|| {
+            futures::executor::block_on(
+                state
+                    .proxy_service
+                    .lock_switch_for_app(AppType::Pi.as_str()),
+            )
+        });
         endpoints::update_endpoint_last_used(state, app_type, provider_id, url)
     }
 
@@ -5008,12 +5298,18 @@ impl ProviderService {
         app_type: AppType,
         updates: Vec<ProviderSortUpdate>,
     ) -> Result<bool, AppError> {
-        for update in updates {
-            let key = ProviderKey::new(app_type.as_str(), update.id)?;
-            state
-                .db
-                .update_provider_sort_index(&key, update.sort_index)?;
+        // Validate the whole payload before entering the app-specific
+        // ordering boundary.
+        let updates = updates
+            .into_iter()
+            .map(|update| {
+                ProviderKey::new(app_type.as_str(), update.id).map(|key| (key, update.sort_index))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if matches!(app_type, AppType::Pi) {
+            return PiCatalogCoordinator::update_route_order(state, updates);
         }
+        state.db.update_provider_sort_index(&updates)?;
 
         Ok(true)
     }
@@ -5175,6 +5471,25 @@ impl ProviderService {
                         "Hermes configuration must be a JSON object",
                     ));
                 }
+            }
+            AppType::Pi => {
+                let config: crate::pi_config::model::PiManagedProviderConfig =
+                    serde_json::from_value(provider.settings_config.clone()).map_err(|error| {
+                        AppError::localized(
+                            "provider.pi.settings.invalid",
+                            format!("Pi 配置无法解析: {error}"),
+                            format!("Pi configuration cannot be decoded: {error}"),
+                        )
+                    })?;
+                crate::pi_config::model::validate_pi_managed_provider(&config).map_err(
+                    |error| {
+                        AppError::localized(
+                            "provider.pi.settings.invalid",
+                            format!("Pi 配置无效: {error}"),
+                            format!("Invalid Pi configuration: {error}"),
+                        )
+                    },
+                )?;
             }
         }
 
@@ -5403,6 +5718,18 @@ impl ProviderService {
                     .to_string();
 
                 Ok((api_key, base_url))
+            }
+            AppType::Pi => {
+                let config: crate::pi_config::model::PiManagedProviderConfig =
+                    serde_json::from_value(provider.settings_config.clone()).map_err(|error| {
+                        AppError::Config(format!("invalid Pi provider configuration: {error}"))
+                    })?;
+                let model = config.models.first().ok_or_else(|| {
+                    AppError::Config("Pi provider has no configured model".to_string())
+                })?;
+                let effective = crate::pi_config::model::effective_pi_model(&config, &model.id)
+                    .map_err(|error| AppError::Config(format!("invalid Pi model: {error}")))?;
+                Ok((effective.api_key.unwrap_or_default(), effective.base_url))
             }
         }
     }

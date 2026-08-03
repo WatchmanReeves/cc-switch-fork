@@ -50,6 +50,8 @@ export interface ProxyTakeoverStatus {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  pi: boolean;
+  pi_operational_state: "disabled" | "active" | "degraded";
 }
 
 export interface ProviderHealth {

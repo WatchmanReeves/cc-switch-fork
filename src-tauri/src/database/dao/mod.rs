@@ -4,6 +4,8 @@
 
 pub mod failover;
 pub mod mcp;
+pub(crate) mod pi_catalog;
+pub mod pi_projections;
 pub mod profiles;
 pub mod prompts;
 pub mod provider_write;
@@ -13,6 +15,7 @@ pub mod providers;
 pub mod providers_seed;
 pub mod proxy;
 pub mod settings;
+pub mod skill_deployments;
 pub mod skills;
 pub mod stream_check;
 pub mod universal_providers;

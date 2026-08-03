@@ -565,6 +565,9 @@ impl SkillService {
                     return Ok(custom.join("skills"));
                 }
             }
+            AppType::Pi => {
+                return Ok(crate::pi_config::native::get_pi_agent_dir()?.join("skills"));
+            }
         }
 
         // 默认路径：回退到用户主目录下的标准位置。
@@ -581,6 +584,7 @@ impl SkillService {
             AppType::OpenCode => home.join(".config").join("opencode").join("skills"),
             AppType::OpenClaw => home.join(".openclaw").join("skills"),
             AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),
+            AppType::Pi => crate::pi_config::native::get_pi_agent_dir()?.join("skills"),
         })
     }
 
@@ -637,8 +641,19 @@ impl SkillService {
                     // 同一仓库的同名 skill，返回现有记录（可能需要更新启用状态）
                     let mut updated = existing.clone();
                     updated.apps.set_enabled_for(current_app, true);
+                    if matches!(current_app, AppType::Pi) {
+                        let guard = crate::services::skill_deployment::PiSkillDeploymentService::operation_guard();
+                        crate::services::skill_deployment::PiSkillDeploymentService::toggle_under_guard(
+                            &guard,
+                            db,
+                            &mut updated,
+                            true,
+                        )
+                        .map_err(|error| anyhow!(error.to_string()))?;
+                        return Ok(updated);
+                    }
                     db.save_skill(&updated)?;
-                    Self::sync_to_app_dir(&updated.directory, current_app)?;
+                    Self::sync_installed_skill_to_app(db, &updated, current_app)?;
                     log::info!(
                         "Skill {} 已存在，更新 {:?} 启用状态",
                         updated.name,
@@ -671,6 +686,7 @@ impl SkillService {
         }
 
         let dest = ssot_dir.join(&install_name);
+        let destination_preexisted = dest.exists();
 
         let mut repo_branch = skill.repo_branch.clone();
 
@@ -788,11 +804,39 @@ impl SkillService {
             updated_at: 0,
         };
 
-        // 保存到数据库
-        db.save_skill(&installed_skill)?;
-
-        // 同步到当前应用目录
-        Self::sync_to_app_dir(&install_name, current_app)?;
+        let installed_skill = if matches!(current_app, AppType::Pi) {
+            let guard =
+                crate::services::skill_deployment::PiSkillDeploymentService::operation_guard();
+            let mut persisted = installed_skill.clone();
+            // Let the deployment coordinator commit the desired bit and ledger
+            // evidence together. Until then the row is deliberately disabled.
+            persisted.apps.pi = false;
+            if let Err(error) = db.save_skill(&persisted) {
+                if !destination_preexisted {
+                    let _ = fs::remove_dir_all(&dest);
+                }
+                return Err(error.into());
+            }
+            if let Err(error) =
+                crate::services::skill_deployment::PiSkillDeploymentService::toggle_under_guard(
+                    &guard,
+                    db,
+                    &mut persisted,
+                    true,
+                )
+            {
+                let _ = db.delete_skill(&persisted.id);
+                if !destination_preexisted {
+                    let _ = fs::remove_dir_all(&dest);
+                }
+                return Err(anyhow!(error.to_string()));
+            }
+            persisted
+        } else {
+            db.save_skill(&installed_skill)?;
+            Self::sync_installed_skill_to_app(db, &installed_skill, current_app)?;
+            installed_skill
+        };
 
         log::info!(
             "Skill {} 安装成功，已启用 {:?}",
@@ -810,6 +854,8 @@ impl SkillService {
     /// 2. 从 SSOT 删除
     /// 3. 从数据库删除
     pub fn uninstall(db: &Arc<Database>, id: &str) -> Result<SkillUninstallResult> {
+        let deployment_guard =
+            crate::services::skill_deployment::PiSkillDeploymentService::operation_guard();
         // 获取 skill 信息
         let skill = db
             .get_installed_skill(id)?
@@ -828,8 +874,15 @@ impl SkillService {
                 let backup_path = Self::create_uninstall_backup(&skill)?
                     .map(|path| path.to_string_lossy().to_string());
 
+                crate::services::skill_deployment::PiSkillDeploymentService::remove_before_uninstall_under_guard(
+                    &deployment_guard,
+                    db,
+                    &skill,
+                )
+                .map_err(|error| anyhow!(error.to_string()))?;
+
                 // 从所有应用目录删除
-                for app in AppType::all() {
+                for app in AppType::all().filter(|app| !matches!(app, AppType::Pi)) {
                     let _ = Self::remove_from_app(&directory, &app);
                 }
 
@@ -1113,15 +1166,40 @@ impl SkillService {
                 ))
             })?;
 
+        // All Pi deployment mutations, SSOT replacement, and ledger
+        // reconciliation share one process boundary. Downloading remains
+        // outside the lock so a slow network cannot block toggles.
+        let deployment_guard =
+            crate::services::skill_deployment::PiSkillDeploymentService::operation_guard();
+
         // 备份旧文件
         let _ = Self::create_uninstall_backup(&skill);
 
-        // 删除旧 SSOT 目录并复制新文件
+        // Stage the exact old SSOT tree in the same directory. Reconstructing
+        // it from the remote source is not a rollback: local files may differ.
         let dest = ssot_dir.join(&skill.directory);
-        if dest.exists() {
-            fs::remove_dir_all(&dest)?;
+        let staged_previous = if fs::symlink_metadata(&dest).is_ok() {
+            let staged = ssot_dir.join(format!(
+                ".{}.cc-switch-update-{}",
+                skill.directory,
+                uuid::Uuid::new_v4().simple()
+            ));
+            fs::rename(&dest, &staged)?;
+            Some(staged)
+        } else {
+            None
+        };
+        if let Err(error) = Self::copy_dir_recursive(&source, &dest) {
+            if let Some(staged) = staged_previous.as_deref() {
+                fs::rename(staged, &dest).with_context(|| {
+                    format!(
+                        "Skill update copy failed ({error}); restoring {} also failed",
+                        dest.display()
+                    )
+                })?;
+            }
+            return Err(error);
         }
-        Self::copy_dir_recursive(&source, &dest)?;
 
         // 计算新哈希 + 解析新元数据
         let new_hash = Self::compute_dir_hash(&dest).ok();
@@ -1151,12 +1229,69 @@ impl SkillService {
             updated_at: chrono::Utc::now().timestamp(),
         };
 
-        db.save_skill(&updated_skill)?;
+        if let Err(error) = db.save_skill(&updated_skill) {
+            let _ = Self::remove_path(&dest);
+            if let Some(staged) = staged_previous.as_deref() {
+                fs::rename(staged, &dest).with_context(|| {
+                    format!(
+                        "Skill metadata update failed ({error}); restoring {} also failed",
+                        dest.display()
+                    )
+                })?;
+            }
+            return Err(error.into());
+        }
 
-        // 同步到所有已启用的应用目录
-        for app in updated_skill.apps.enabled_apps() {
-            if let Err(e) = Self::sync_to_app_dir(&updated_skill.directory, &app) {
+        // Pi is the consistency-critical consumer: update its owned
+        // deployment before best-effort legacy app copies.
+        if updated_skill.apps.pi {
+            if let Err(error) =
+                crate::services::skill_deployment::PiSkillDeploymentService::reconcile_skill_under_guard(
+                    &deployment_guard,
+                    db,
+                    &updated_skill,
+                )
+            {
+                let db_rollback = db.save_skill(&skill);
+                let file_rollback = Self::remove_path(&dest).and_then(|_| {
+                    if let Some(staged) = staged_previous.as_deref() {
+                        fs::rename(staged, &dest).map_err(anyhow::Error::from)
+                    } else {
+                        Ok(())
+                    }
+                });
+                return match (db_rollback, file_rollback) {
+                    (Ok(()), Ok(())) => Err(anyhow!(error.to_string())),
+                    (db_result, file_result) => Err(anyhow!(
+                        "Pi Skill update failed ({error}); DB rollback: {}; file rollback: {}",
+                        db_result
+                            .err()
+                            .map_or_else(|| "ok".to_string(), |value| value.to_string()),
+                        file_result
+                            .err()
+                            .map_or_else(|| "ok".to_string(), |value| value.to_string())
+                    )),
+                };
+            }
+        }
+
+        // 同步到所有已启用的其他应用目录
+        for app in updated_skill
+            .apps
+            .enabled_apps()
+            .into_iter()
+            .filter(|app| !matches!(app, AppType::Pi))
+        {
+            if let Err(e) = Self::sync_installed_skill_to_app(db, &updated_skill, &app) {
                 log::warn!("同步更新后的 skill 到 {:?} 失败: {e}", app);
+            }
+        }
+        if let Some(staged) = staged_previous {
+            if let Err(error) = Self::remove_path(&staged) {
+                log::warn!(
+                    "Failed to remove committed Skill update rollback staging '{}': {error}",
+                    staged.display()
+                );
             }
         }
 
@@ -1201,7 +1336,10 @@ impl SkillService {
 
     /// 迁移 Skill 存储位置（在两个 SSOT 目录间移动文件）
     ///
-    /// 安全策略：先移文件，后改设置。中途崩溃时设置仍指向旧目录。
+    /// Safety strategy: copy first while the old SSOT remains live, switch the
+    /// setting, reconcile every app, then delete the old trees. Keeping both
+    /// roots during reconciliation lets the Pi ownership ledger verify its old
+    /// symlink/copy before atomically replacing it.
     pub fn migrate_storage(
         db: &Arc<Database>,
         target: SkillStorageLocation,
@@ -1215,6 +1353,9 @@ impl SkillService {
             });
         }
 
+        let deployment_guard =
+            crate::services::skill_deployment::PiSkillDeploymentService::operation_guard();
+
         // 1. 解析旧目录和新目录（不改设置）
         let old_dir = Self::get_ssot_dir()?;
         let new_dir = match target {
@@ -1225,18 +1366,18 @@ impl SkillService {
         };
         fs::create_dir_all(&new_dir)?;
 
-        // 2. 逐个移动 skill 目录
+        // 2. Copy every valid tree. Do not rename/delete the old root before
+        // Pi has verified the ownership identity recorded in its ledger.
         let skills = db.get_all_installed_skills()?;
         let mut result = MigrationResult {
             migrated_count: 0,
             skipped_count: 0,
             errors: vec![],
         };
+        let mut copied = Vec::<(PathBuf, PathBuf)>::new();
 
         for skill in skills.values() {
-            // 下面是 rename 与 remove_dir_all，脏 directory 可把任意目录搬走或删掉。
-            // 软失败：本函数已有 errors 收集通道，记一条继续处理其余 skill，
-            // 不要整体中断——用户只是在切换存储位置。
+            // Invalid DB rows are reported but never joined to either root.
             let directory = match Self::require_valid_directory(&skill.directory) {
                 Ok(directory) => directory,
                 Err(err) => {
@@ -1253,32 +1394,90 @@ impl SkillService {
                 result.skipped_count += 1;
                 continue;
             }
-            if dst.exists() {
-                result.skipped_count += 1;
-                continue;
+            if fs::symlink_metadata(&dst).is_ok() {
+                for (_, copied_destination) in copied.iter().rev() {
+                    let _ = Self::remove_path(copied_destination);
+                }
+                return Err(anyhow!(
+                    "Skill storage target already contains an unowned entry: {}",
+                    dst.display()
+                ));
             }
-
-            // 优先 rename（同文件系统原子操作），失败则 copy+delete
-            match fs::rename(&src, &dst) {
-                Ok(()) => result.migrated_count += 1,
-                Err(_) => match Self::copy_dir_recursive(&src, &dst) {
-                    Ok(()) => {
-                        let _ = fs::remove_dir_all(&src);
-                        result.migrated_count += 1;
-                    }
-                    Err(e) => {
-                        result.errors.push(format!("{}: {e}", skill.directory));
-                    }
-                },
+            if let Err(error) = Self::copy_dir_recursive(&src, &dst) {
+                let _ = Self::remove_path(&dst);
+                for (_, copied_destination) in copied.iter().rev() {
+                    let _ = Self::remove_path(copied_destination);
+                }
+                return Err(error);
             }
+            copied.push((src, dst));
+            result.migrated_count += 1;
         }
 
-        // 3. 文件移动完成后才持久化设置
-        crate::settings::set_skill_storage_location(target)?;
+        // 3. Switch authority only after every new tree is complete.
+        if let Err(error) = crate::settings::set_skill_storage_location(target) {
+            for (_, copied_destination) in copied.iter().rev() {
+                let _ = Self::remove_path(copied_destination);
+            }
+            return Err(error.into());
+        }
 
-        // 4. 刷新所有应用目录的 symlink（指向新 SSOT）
-        for app in AppType::all() {
-            let _ = Self::sync_to_app(db, &app);
+        // 4. Reconcile Pi under the same mutex, then all legacy app views.
+        let reconcile_result =
+            crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all_under_guard(
+                &deployment_guard,
+                db,
+            )
+            .map_err(|error| anyhow!(error.to_string()))
+            .and_then(|()| {
+                for app in AppType::all().filter(|app| !matches!(app, AppType::Pi)) {
+                    Self::sync_to_app(db, &app)?;
+                }
+                Ok(())
+            });
+        if let Err(error) = reconcile_result {
+            let mut rollback_errors = Vec::new();
+            if let Err(rollback) = crate::settings::set_skill_storage_location(current) {
+                rollback_errors.push(format!("settings: {rollback}"));
+            } else {
+                if let Err(rollback) =
+                    crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all_under_guard(
+                        &deployment_guard,
+                        db,
+                    )
+                {
+                    rollback_errors.push(format!("Pi deployment: {rollback}"));
+                }
+                for app in AppType::all().filter(|app| !matches!(app, AppType::Pi)) {
+                    if let Err(rollback) = Self::sync_to_app(db, &app) {
+                        rollback_errors.push(format!("{app:?}: {rollback}"));
+                    }
+                }
+            }
+            for (_, copied_destination) in copied.iter().rev() {
+                if let Err(rollback) = Self::remove_path(copied_destination) {
+                    rollback_errors.push(format!("{}: {rollback}", copied_destination.display()));
+                }
+            }
+            return if rollback_errors.is_empty() {
+                Err(error)
+            } else {
+                Err(anyhow!(
+                    "Skill storage migration failed ({error}); rollback failures: {}",
+                    rollback_errors.join("; ")
+                ))
+            };
+        }
+
+        // 5. Only after every consumer points at the new root may the old
+        // sources be removed. Cleanup errors are visible but do not roll back
+        // an already-consistent authority switch.
+        for (old_source, _) in &copied {
+            if let Err(error) = Self::remove_path(old_source) {
+                result
+                    .errors
+                    .push(format!("{}: {error}", old_source.display()));
+            }
         }
 
         log::info!(
@@ -1403,7 +1602,7 @@ impl SkillService {
         }
 
         if !restored_skill.apps.is_empty() {
-            if let Err(err) = Self::sync_to_app_dir(&restored_skill.directory, current_app) {
+            if let Err(err) = Self::sync_installed_skill_to_app(db, &restored_skill, current_app) {
                 let _ = db.delete_skill(&restored_skill.id);
                 let _ = fs::remove_dir_all(&restore_path);
                 return Err(err);
@@ -1428,6 +1627,14 @@ impl SkillService {
         let mut skill = db
             .get_installed_skill(id)?
             .ok_or_else(|| anyhow!("Skill not found: {id}"))?;
+
+        if matches!(app, AppType::Pi) {
+            crate::services::skill_deployment::PiSkillDeploymentService::toggle(
+                db, &mut skill, enabled,
+            )
+            .map_err(|error| anyhow!(error.to_string()))?;
+            return Ok(());
+        }
 
         // 更新状态
         skill.apps.set_enabled_for(app, enabled);
@@ -1517,6 +1724,11 @@ impl SkillService {
         db: &Arc<Database>,
         imports: Vec<ImportSkillSelection>,
     ) -> Result<Vec<InstalledSkill>> {
+        // Import can explicitly acquire or release Pi filesystem ownership.
+        // Serialize the source scan, SSOT establishment, ownership decision and
+        // desired-state transaction with every other Pi deployment operation.
+        let deployment_guard =
+            crate::services::skill_deployment::PiSkillDeploymentService::operation_guard();
         let ssot_dir = Self::get_ssot_dir()?;
         let agents_lock = parse_agents_lock();
         let mut imported = Vec::new();
@@ -1579,8 +1791,12 @@ impl SkillService {
 
             // 复制到 SSOT
             let dest = ssot_dir.join(&dir_name);
-            if !dest.exists() {
-                Self::copy_dir_recursive(&source, &dest)?;
+            let created_ssot = !dest.exists();
+            if created_ssot {
+                if let Err(error) = Self::copy_dir_recursive(&source, &dest) {
+                    let _ = Self::remove_path(&dest);
+                    return Err(error);
+                }
             }
 
             // 解析元数据
@@ -1588,7 +1804,7 @@ impl SkillService {
             let (name, description) = Self::read_skill_name_desc(&skill_md, &dir_name);
 
             // 启用状态仅信任用户本次显式选择，不再根据“在哪些位置找到”自动推断。
-            let apps = selection.apps;
+            let requested_apps = selection.apps;
 
             // 从 lock 文件提取仓库信息
             let (id, repo_owner, repo_name, repo_branch, readme_url) =
@@ -1599,7 +1815,8 @@ impl SkillService {
             let content_hash = Self::compute_dir_hash(&ssot_skill_dir).ok();
 
             // 创建记录
-            let skill = InstalledSkill {
+            let previous = db.get_installed_skill(&id)?;
+            let mut skill = InstalledSkill {
                 id,
                 name,
                 description,
@@ -1608,14 +1825,54 @@ impl SkillService {
                 repo_name,
                 repo_branch,
                 readme_url,
-                apps,
+                // save_skill intentionally preserves an existing Pi desired bit.
+                // For a new row keep it disabled until the deployment ledger and
+                // desired bit can commit in one transaction below.
+                apps: SkillApps {
+                    pi: previous.as_ref().is_some_and(|installed| installed.apps.pi),
+                    ..requested_apps.clone()
+                },
                 installed_at: chrono::Utc::now().timestamp(),
                 content_hash,
                 updated_at: 0,
             };
 
             // 保存到数据库
-            db.save_skill(&skill)?;
+            if let Err(error) = db.save_skill(&skill) {
+                if created_ssot {
+                    let _ = Self::remove_path(&dest);
+                }
+                return Err(error.into());
+            }
+            if let Err(error) = crate::services::skill_deployment::PiSkillDeploymentService::import_desired_state_under_guard(
+                &deployment_guard,
+                db,
+                &mut skill,
+                requested_apps.pi,
+            ) {
+                let db_rollback = if let Some(previous) = previous.as_ref() {
+                    db.save_skill(previous).map(|_| ())
+                } else {
+                    db.delete_skill(&skill.id).map(|_| ())
+                };
+                let file_rollback = if created_ssot {
+                    Self::remove_path(&dest)
+                } else {
+                    Ok(())
+                };
+                return match (db_rollback, file_rollback) {
+                    (Ok(()), Ok(())) => Err(anyhow!(error.to_string())),
+                    (db_result, file_result) => Err(anyhow!(
+                        "Pi Skill import failed ({error}); DB rollback: {}; SSOT rollback: {}",
+                        db_result
+                            .err()
+                            .map_or_else(|| "ok".to_string(), |value| value.to_string()),
+                        file_result
+                            .err()
+                            .map_or_else(|| "ok".to_string(), |value| value.to_string())
+                    )),
+                };
+            }
 
             imported.push(skill);
         }
@@ -1655,6 +1912,19 @@ impl SkillService {
         crate::settings::get_skill_sync_method()
     }
 
+    fn sync_installed_skill_to_app(
+        db: &Arc<Database>,
+        skill: &InstalledSkill,
+        app: &AppType,
+    ) -> Result<()> {
+        if matches!(app, AppType::Pi) {
+            crate::services::skill_deployment::PiSkillDeploymentService::reconcile_skill(db, skill)
+                .map_err(|error| anyhow!(error.to_string()))
+        } else {
+            Self::sync_to_app_dir(&skill.directory, app)
+        }
+    }
+
     /// 同步 Skill 到应用目录（使用 symlink 或 copy）
     ///
     /// 根据配置和平台选择最佳同步方式：
@@ -1664,6 +1934,11 @@ impl SkillService {
     pub fn sync_to_app_dir(directory: &str, app: &AppType) -> Result<()> {
         if matches!(app, AppType::ClaudeDesktop) {
             return Ok(());
+        }
+        if matches!(app, AppType::Pi) {
+            return Err(anyhow!(
+                "Pi Skill deployment requires the ownership ledger; use the database-aware reconciler"
+            ));
         }
 
         // directory 可能来自被污染的 DB 行（如同步导入的远端快照），join 前必须校验。
@@ -1860,6 +2135,10 @@ impl SkillService {
     pub fn sync_to_app(db: &Arc<Database>, app: &AppType) -> Result<()> {
         if matches!(app, AppType::ClaudeDesktop) {
             return Ok(());
+        }
+        if matches!(app, AppType::Pi) {
+            return crate::services::skill_deployment::PiSkillDeploymentService::reconcile_all(db)
+                .map_err(|error| anyhow!(error.to_string()));
         }
 
         let skills = db.get_all_installed_skills()?;
@@ -2113,7 +2392,7 @@ impl SkillService {
     }
 
     /// 静态方法：解析技能元数据
-    fn parse_skill_metadata_static(path: &Path) -> Result<SkillMetadata> {
+    pub(crate) fn parse_skill_metadata_static(path: &Path) -> Result<SkillMetadata> {
         let content = fs::read_to_string(path)?;
         let content = content.trim_start_matches('\u{feff}');
 
@@ -2733,6 +3012,35 @@ impl SkillService {
         Ok(())
     }
 
+    /// Copy into a unique sibling and publish with an OS no-replace rename.
+    /// A concurrent installer can win, but its directory is never overwritten.
+    fn copy_dir_noreplace(src: &Path, dest: &Path) -> Result<()> {
+        let parent = dest
+            .parent()
+            .ok_or_else(|| anyhow!("Skill destination has no parent: {}", dest.display()))?;
+        fs::create_dir_all(parent)?;
+        let name = dest
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("Skill destination has an invalid name: {}", dest.display()))?;
+        let staged = parent.join(format!(
+            ".{name}.cc-switch-install-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        if let Err(error) = Self::copy_dir_recursive(src, &staged) {
+            let _ = fs::remove_dir_all(&staged);
+            return Err(error);
+        }
+        if let Err(error) = crate::pi_config::shared_file::publish_path_noreplace(&staged, dest) {
+            let _ = fs::remove_dir_all(&staged);
+            return Err(anyhow!(
+                "Skill destination was created concurrently ({}): {error}",
+                dest.display()
+            ));
+        }
+        Ok(())
+    }
+
     fn resolve_uninstall_backup_source(skill: &InstalledSkill) -> Result<Option<PathBuf>> {
         // 返回值会被整目录复制进 ~/.cc-switch/skill-backups/ 并由 get_skill_backups
         // 在界面上列出——脏 directory 在这里等于任意文件读取 + 外泄通道。
@@ -2996,6 +3304,10 @@ impl SkillService {
         let ssot_dir = Self::get_ssot_dir()?;
         let mut installed = Vec::new();
         let existing_skills = db.get_all_installed_skills()?;
+        let mut claimed_directories = existing_skills
+            .values()
+            .map(|skill| skill.directory.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
         let zip_stem = zip_path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -3062,6 +3374,32 @@ impl SkillService {
                 );
                 continue;
             }
+            if claimed_directories.contains(&install_name.to_ascii_lowercase()) {
+                log::warn!(
+                    "Skill directory '{}' appears more than once in the archive, skipping",
+                    install_name
+                );
+                continue;
+            }
+
+            if matches!(current_app, AppType::Pi)
+                && meta.as_ref().is_none_or(|metadata| {
+                    metadata
+                        .name
+                        .as_deref()
+                        .is_none_or(|name| name.trim().is_empty())
+                        || metadata
+                            .description
+                            .as_deref()
+                            .is_none_or(|description| description.trim().is_empty())
+                })
+            {
+                return Err(anyhow!(format_skill_error(
+                    "INVALID_SKILL_DIRECTORY",
+                    &[("directory", &install_name)],
+                    Some("checkSkillManifest"),
+                )));
+            }
 
             let (name, description) = match meta {
                 Some(m) => (
@@ -3071,18 +3409,35 @@ impl SkillService {
                 None => (install_name.clone(), None),
             };
 
+            let deployment_guard = matches!(current_app, AppType::Pi)
+                .then(crate::services::skill_deployment::PiSkillDeploymentService::operation_guard);
+            let pi_source_digest = if deployment_guard.is_some() {
+                Some(
+                    crate::services::skill_deployment::PiSkillDeploymentService::source_digest(
+                        &skill_dir,
+                    )
+                    .map_err(|error| anyhow!(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+
             // 复制到 SSOT
             let dest = ssot_dir.join(&install_name);
-            if dest.exists() {
-                let _ = fs::remove_dir_all(&dest);
+            if fs::symlink_metadata(&dest).is_ok() {
+                return Err(anyhow!(format_skill_error(
+                    "SKILL_DIRECTORY_CONFLICT",
+                    &[("directory", &install_name)],
+                    Some("uninstallFirst"),
+                )));
             }
-            Self::copy_dir_recursive(&skill_dir, &dest)?;
+            Self::copy_dir_noreplace(&skill_dir, &dest)?;
 
             // 计算内容哈希
             let content_hash = Self::compute_dir_hash(&dest).ok();
 
             // 创建 InstalledSkill 记录
-            let skill = InstalledSkill {
+            let mut skill = InstalledSkill {
                 id: format!("local:{install_name}"),
                 name,
                 description,
@@ -3097,17 +3452,75 @@ impl SkillService {
                 updated_at: 0,
             };
 
-            // 保存到数据库
-            db.save_skill(&skill)?;
-
-            // 同步到当前应用目录
-            Self::sync_to_app_dir(&install_name, current_app)?;
+            if let Some(guard) = deployment_guard.as_ref() {
+                // The coordinator commits Pi desired state and ownership
+                // evidence together. Until then the portable row is inert.
+                skill.apps.pi = false;
+                if let Err(error) = db.save_skill(&skill) {
+                    let cleanup =
+                        crate::services::skill_deployment::PiSkillDeploymentService::remove_source_if_unchanged(
+                            &dest,
+                            pi_source_digest
+                                .as_deref()
+                                .expect("Pi ZIP publication has a source digest"),
+                        );
+                    return match cleanup {
+                        Ok(()) => Err(error.into()),
+                        Err(cleanup) => Err(anyhow!(
+                            "Pi Skill ZIP database write failed ({error}); SSOT rollback failed ({cleanup})"
+                        )),
+                    };
+                }
+                if let Err(error) =
+                    crate::services::skill_deployment::PiSkillDeploymentService::toggle_under_guard(
+                        guard, db, &mut skill, true,
+                    )
+                {
+                    if let Err(deployment_rollback) =
+                        crate::services::skill_deployment::PiSkillDeploymentService::remove_before_uninstall_under_guard(
+                            guard, db, &skill,
+                        )
+                    {
+                        return Err(anyhow!(
+                            "Pi Skill ZIP install failed ({error}); native ownership rollback failed ({deployment_rollback}); the DB row and SSOT were retained as recovery evidence"
+                        ));
+                    }
+                    let db_rollback = db.delete_skill(&skill.id);
+                    if !matches!(&db_rollback, Ok(true)) {
+                        return Err(anyhow!(
+                            "Pi Skill ZIP install failed ({error}); DB rollback failed ({}); SSOT was retained",
+                            match db_rollback {
+                                Ok(false) => "row missing".to_string(),
+                                Err(value) => value.to_string(),
+                                Ok(true) => unreachable!(),
+                            }
+                        ));
+                    }
+                    let file_rollback =
+                        crate::services::skill_deployment::PiSkillDeploymentService::remove_source_if_unchanged(
+                            &dest,
+                            pi_source_digest
+                                .as_deref()
+                                .expect("Pi ZIP publication has a source digest"),
+                        );
+                    return match file_rollback {
+                        Ok(()) => Err(anyhow!(error.to_string())),
+                        Err(file_error) => Err(anyhow!(
+                            "Pi Skill ZIP install failed ({error}); SSOT rollback failed ({file_error})"
+                        )),
+                    };
+                }
+            } else {
+                db.save_skill(&skill)?;
+                Self::sync_installed_skill_to_app(db, &skill, current_app)?;
+            }
 
             log::info!(
                 "Skill {} installed from ZIP, enabled for {:?}",
                 skill.name,
                 current_app
             );
+            claimed_directories.insert(install_name.to_ascii_lowercase());
             installed.push(skill);
         }
 
@@ -4014,6 +4427,34 @@ mod tests {
     }
 
     #[test]
+    fn no_replace_directory_publish_preserves_an_existing_destination() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).expect("source");
+        fs::create_dir(&destination).expect("destination");
+        fs::write(source.join("SKILL.md"), "managed").expect("source manifest");
+        fs::write(destination.join("SKILL.md"), "external").expect("external manifest");
+
+        SkillService::copy_dir_noreplace(&source, &destination)
+            .expect_err("an existing destination must win atomically");
+        assert_eq!(
+            fs::read_to_string(destination.join("SKILL.md")).expect("external destination"),
+            "external"
+        );
+        assert!(
+            fs::read_dir(temp.path())
+                .expect("temp root")
+                .all(|entry| !entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("cc-switch-install")),
+            "a rejected staged publication must be cleaned"
+        );
+    }
+
+    #[test]
     fn extract_local_zip_hands_back_a_guard_that_owns_the_tree() {
         use std::io::Write;
         use zip::write::SimpleFileOptions;
@@ -4140,6 +4581,169 @@ mod tests {
                 None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
             }
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn importing_a_native_pi_skill_adopts_exact_content_and_can_disable_it() {
+        struct PiDirGuard(Option<std::ffi::OsString>);
+        impl Drop for PiDirGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("PI_CODING_AGENT_DIR", value),
+                    None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+                }
+            }
+        }
+        struct StorageLocationGuard(SkillStorageLocation);
+        impl Drop for StorageLocationGuard {
+            fn drop(&mut self) {
+                let _ = crate::settings::set_skill_storage_location(self.0);
+            }
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let _home_guard = TestHomeGuard::set(temp.path());
+        let pi_agent_dir = temp.path().join("pi-agent");
+        let _pi_dir_guard = PiDirGuard(std::env::var_os("PI_CODING_AGENT_DIR"));
+        std::env::set_var("PI_CODING_AGENT_DIR", &pi_agent_dir);
+        let _storage_guard = StorageLocationGuard(crate::settings::get_skill_storage_location());
+        crate::settings::set_skill_storage_location(SkillStorageLocation::CcSwitch)
+            .expect("select isolated SSOT");
+
+        let native = pi_agent_dir.join("skills").join("native-skill");
+        write_skill(&native, "Native Skill");
+        fs::write(native.join("details.txt"), "pinned native bytes").expect("native detail");
+        let db = Arc::new(Database::memory().expect("memory db"));
+
+        let imported = SkillService::import_from_apps(
+            &db,
+            vec![ImportSkillSelection {
+                directory: "native-skill".to_string(),
+                apps: SkillApps::only(&AppType::Pi),
+            }],
+        )
+        .expect("explicit Pi import should adopt the exact native tree");
+        assert_eq!(imported.len(), 1);
+        assert!(imported[0].apps.pi);
+
+        let statuses =
+            crate::services::skill_deployment::PiSkillDeploymentService::inspect_all(&db)
+                .expect("inspect Pi deployment");
+        let status = statuses
+            .get(&imported[0].id)
+            .expect("imported status must exist");
+        assert_eq!(
+            status.ownership,
+            crate::services::skill_deployment::PiSkillOwnership::Owned
+        );
+        assert_eq!(
+            status.discovery,
+            crate::services::skill_deployment::PiSkillDiscovery::Active
+        );
+        assert!(status.effectively_discovered);
+
+        SkillService::toggle_app(&db, &imported[0].id, &AppType::Pi, false)
+            .expect("owned imported Pi Skill can be disabled");
+        assert!(
+            !native.exists(),
+            "disabling an explicitly adopted native tree removes that owned deployment"
+        );
+        assert!(
+            SkillService::get_ssot_dir()
+                .expect("SSOT")
+                .join("native-skill")
+                .join("SKILL.md")
+                .is_file(),
+            "disabling Pi must preserve the managed SSOT"
+        );
+        assert!(
+            !db.get_installed_skill(&imported[0].id)
+                .expect("read imported row")
+                .expect("row")
+                .apps
+                .pi
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pi_zip_collision_rolls_back_database_and_ssot_without_touching_native_skill() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        struct PiDirGuard(Option<std::ffi::OsString>);
+        impl Drop for PiDirGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("PI_CODING_AGENT_DIR", value),
+                    None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+                }
+            }
+        }
+        struct StorageLocationGuard(SkillStorageLocation);
+        impl Drop for StorageLocationGuard {
+            fn drop(&mut self) {
+                let _ = crate::settings::set_skill_storage_location(self.0);
+            }
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let _home_guard = TestHomeGuard::set(temp.path());
+        let pi_agent_dir = temp.path().join("pi-agent");
+        let _pi_dir_guard = PiDirGuard(std::env::var_os("PI_CODING_AGENT_DIR"));
+        std::env::set_var("PI_CODING_AGENT_DIR", &pi_agent_dir);
+        let _storage_guard = StorageLocationGuard(crate::settings::get_skill_storage_location());
+        crate::settings::set_skill_storage_location(SkillStorageLocation::CcSwitch)
+            .expect("isolated SSOT");
+
+        let native = pi_agent_dir.join("skills").join("collision");
+        write_skill(&native, "Native collision");
+        fs::write(native.join("native.txt"), "must survive").expect("native bytes");
+
+        let mut archive = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
+            let options = SimpleFileOptions::default();
+            zip.start_file("collision/SKILL.md", options)
+                .expect("manifest entry");
+            zip.write_all(b"---\nname: Imported\ndescription: Imported collision\n---\n")
+                .expect("manifest bytes");
+            zip.start_file("collision/imported.txt", options)
+                .expect("payload entry");
+            zip.write_all(b"must not remain").expect("payload bytes");
+            zip.finish().expect("finish zip");
+        }
+        let zip_path = temp.path().join("collision.zip");
+        fs::write(&zip_path, archive).expect("write zip");
+        let db = Arc::new(Database::memory().expect("database"));
+
+        SkillService::install_from_zip(&db, &zip_path, &AppType::Pi)
+            .expect_err("unowned native collision must fail");
+
+        assert_eq!(
+            fs::read_to_string(native.join("native.txt")).expect("native survives"),
+            "must survive"
+        );
+        assert!(
+            db.get_installed_skill("local:collision")
+                .expect("read skill")
+                .is_none(),
+            "failed ZIP install must not leave desired state"
+        );
+        assert!(
+            db.get_pi_skill_deployments("local:collision")
+                .expect("read ledger")
+                .is_empty(),
+            "failed ZIP install must not create ownership evidence"
+        );
+        assert!(
+            !SkillService::get_ssot_dir()
+                .expect("SSOT")
+                .join("collision")
+                .exists(),
+            "failed ZIP install must compensate its SSOT copy"
+        );
     }
 
     fn poisoned_skill(id: &str, directory: &str) -> InstalledSkill {

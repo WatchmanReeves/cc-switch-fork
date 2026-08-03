@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { proxyKeys } from "@/lib/query/proxy";
+import { getAppLabel } from "@/config/appConfig";
 
 // ========== 熔断器 Hooks ==========
 
@@ -223,14 +224,7 @@ export function useSetAutoFailoverEnabled() {
     },
 
     onSuccess: (_data, variables) => {
-      const appLabel =
-        variables.appType === "claude"
-          ? "Claude"
-          : variables.appType === "codex"
-            ? "Codex"
-            : variables.appType === "grokbuild"
-              ? "Grok Build"
-              : "Gemini";
+      const appLabel = getAppLabel(variables.appType);
 
       toast.success(
         variables.enabled

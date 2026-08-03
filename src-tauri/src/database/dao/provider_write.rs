@@ -37,14 +37,14 @@ impl ProviderKey {
 
 #[derive(Debug, Clone)]
 pub struct ProviderRowUpdate {
-    name: String,
-    settings_config: Value,
-    website_url: Option<String>,
-    category: Option<String>,
-    notes: Option<String>,
-    meta: ProviderMeta,
-    icon: Option<String>,
-    icon_color: Option<String>,
+    pub(super) name: String,
+    pub(super) settings_config: Value,
+    pub(super) website_url: Option<String>,
+    pub(super) category: Option<String>,
+    pub(super) notes: Option<String>,
+    pub(super) meta: ProviderMeta,
+    pub(super) icon: Option<String>,
+    pub(super) icon_color: Option<String>,
 }
 
 impl ProviderRowUpdate {
@@ -71,15 +71,15 @@ impl ProviderRowUpdate {
 
 #[derive(Debug, Clone)]
 pub struct ProviderRowCreate {
-    content: ProviderRowUpdate,
-    created_at: Option<i64>,
+    pub(super) content: ProviderRowUpdate,
+    pub(super) created_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NewEndpoint {
-    url: String,
-    added_at: Option<i64>,
-    last_used: Option<i64>,
+    pub(super) url: String,
+    pub(super) added_at: Option<i64>,
+    pub(super) last_used: Option<i64>,
 }
 
 impl NewEndpoint {
@@ -116,11 +116,11 @@ impl TryFrom<CustomEndpoint> for NewEndpoint {
 
 #[derive(Debug, Clone)]
 pub struct NewProviderAggregate {
-    key: ProviderKey,
-    row: ProviderRowCreate,
-    sort_index: Option<usize>,
-    in_failover_queue: bool,
-    initial_endpoints: Vec<NewEndpoint>,
+    pub(super) key: ProviderKey,
+    pub(super) row: ProviderRowCreate,
+    pub(super) sort_index: Option<usize>,
+    pub(super) in_failover_queue: bool,
+    pub(super) initial_endpoints: Vec<NewEndpoint>,
 }
 
 impl NewProviderAggregate {
@@ -219,7 +219,7 @@ fn encode_row(row: &ProviderRowUpdate) -> Result<(String, String), AppError> {
     Ok((settings_config, meta))
 }
 
-fn insert_row(
+pub(super) fn insert_row(
     tx: &Transaction<'_>,
     key: &ProviderKey,
     row: &ProviderRowUpdate,
@@ -272,7 +272,7 @@ fn insert_row(
     Ok(())
 }
 
-fn insert_endpoint(
+pub(super) fn insert_endpoint(
     tx: &Transaction<'_>,
     key: &ProviderKey,
     endpoint: &NewEndpoint,
@@ -357,7 +357,7 @@ pub(super) fn restore_provider_aggregate_on_tx(
     Ok(())
 }
 
-fn update_row(
+pub(super) fn update_row(
     tx: &Transaction<'_>,
     key: &ProviderKey,
     row: &ProviderRowUpdate,
@@ -618,23 +618,38 @@ impl Database {
 
     pub(crate) fn update_provider_sort_index(
         &self,
-        key: &ProviderKey,
-        sort_index: usize,
+        updates: &[(ProviderKey, usize)],
     ) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
-        if conn
-            .execute(
-                "UPDATE providers SET sort_index = ?1 WHERE id = ?2 AND app_type = ?3",
-                params![sort_index, key.id, key.app_type],
-            )
-            .map_err(|error| AppError::Database(error.to_string()))?
-            != 1
-        {
-            return Err(AppError::NotFound(format!(
-                "provider '{}/{}'",
-                key.app_type, key.id
-            )));
+        let mut seen = std::collections::HashSet::with_capacity(updates.len());
+        for (key, _) in updates {
+            if !seen.insert((key.app_type().to_string(), key.id().to_string())) {
+                return Err(AppError::InvalidInput(format!(
+                    "duplicate provider sort update for '{}/{}'",
+                    key.app_type(),
+                    key.id()
+                )));
+            }
         }
-        Ok(())
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        for (key, sort_index) in updates {
+            if tx
+                .execute(
+                    "UPDATE providers SET sort_index = ?1 WHERE id = ?2 AND app_type = ?3",
+                    params![sort_index, key.id, key.app_type],
+                )
+                .map_err(|error| AppError::Database(error.to_string()))?
+                != 1
+            {
+                return Err(AppError::NotFound(format!(
+                    "provider '{}/{}'",
+                    key.app_type, key.id
+                )));
+            }
+        }
+        tx.commit()
+            .map_err(|error| AppError::Database(error.to_string()))
     }
 }

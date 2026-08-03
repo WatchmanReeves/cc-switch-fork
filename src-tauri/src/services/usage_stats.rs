@@ -137,8 +137,9 @@ pub struct RequestLogDetail {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
-    /// Internal storage semantics; omitted from the UI/API payload.
-    #[serde(skip)]
+    /// Persisted request-level semantics used by both pricing and UI cache
+    /// normalization. This must cross IPC; app-type inference is only a legacy
+    /// fallback for rows written before the semantics column existed.
     pub input_token_semantics: i64,
     pub input_cost_usd: String,
     pub output_cost_usd: String,
@@ -1653,10 +1654,10 @@ impl Database {
         let detail_sql = format!(
             "SELECT l.request_id, l.provider_id, {detail_pname} as provider_name, l.app_type, l.model,
                     l.request_model, l.cost_multiplier,
-                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                    input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
-                    is_streaming, latency_ms, first_token_ms, duration_ms,
-                    status_code, error_message, created_at, l.data_source, l.pricing_model,
+                    l.input_tokens, l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
+                    l.input_cost_usd, l.output_cost_usd, l.cache_read_cost_usd, l.cache_creation_cost_usd, l.total_cost_usd,
+                    l.is_streaming, l.latency_ms, l.first_token_ms, l.duration_ms,
+                    l.status_code, l.error_message, l.created_at, l.data_source, l.pricing_model,
                     l.input_token_semantics
              FROM proxy_request_logs l
              LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
@@ -1897,19 +1898,18 @@ impl Database {
         // 1. 历史 cache-inclusive 行只包含 cache read；新 total 行还包含 cache write。
         // 2. Claude/Anthropic 的 input_tokens 已经是 fresh input，不能再次扣减
         // 3. 各项成本是基础成本（不含倍率），倍率只作用于最终总价
-        let cache_inclusive_app =
-            crate::services::sql_helpers::is_cache_inclusive_app(log.app_type.as_str());
-        let billable_input_tokens =
-            if !cache_inclusive_app || log.input_token_semantics == INPUT_TOKEN_SEMANTICS_FRESH {
-                log.input_tokens as u64
-            } else if log.input_token_semantics == INPUT_TOKEN_SEMANTICS_TOTAL {
-                (log.input_tokens as u64)
-                    .saturating_sub(log.cache_read_tokens as u64)
-                    .saturating_sub(log.cache_creation_tokens as u64)
-            } else {
-                // v12 and earlier: input included cache reads but excluded cache writes.
-                (log.input_tokens as u64).saturating_sub(log.cache_read_tokens as u64)
-            };
+        let billable_input_tokens = if log.input_token_semantics == INPUT_TOKEN_SEMANTICS_FRESH {
+            log.input_tokens as u64
+        } else if log.input_token_semantics == INPUT_TOKEN_SEMANTICS_TOTAL {
+            (log.input_tokens as u64)
+                .saturating_sub(log.cache_read_tokens as u64)
+                .saturating_sub(log.cache_creation_tokens as u64)
+        } else if crate::services::sql_helpers::is_cache_inclusive_app(log.app_type.as_str()) {
+            // v12 and earlier: input included cache reads but excluded cache writes.
+            (log.input_tokens as u64).saturating_sub(log.cache_read_tokens as u64)
+        } else {
+            log.input_tokens as u64
+        };
         let input_cost =
             rust_decimal::Decimal::from(billable_input_tokens) * pricing.input / million;
         let output_cost =
@@ -2404,6 +2404,54 @@ mod tests {
                 data_source
             ],
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn paginated_and_detail_ipc_serialize_persisted_input_semantics() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn,
+                "pi-semantics-ipc",
+                "pi",
+                "pi-provider",
+                "gpt-test",
+                "request",
+                1,
+                1_000,
+                5,
+                800,
+                0,
+                200,
+                "0",
+            )?;
+            conn.execute(
+                "UPDATE proxy_request_logs
+                    SET input_token_semantics = ?1
+                  WHERE request_id = 'pi-semantics-ipc'",
+                [INPUT_TOKEN_SEMANTICS_TOTAL],
+            )?;
+        }
+
+        let page = db.get_request_logs(&LogFilters::default(), 0, 10)?;
+        let page_json =
+            serde_json::to_value(&page).map_err(|error| AppError::Database(error.to_string()))?;
+        assert_eq!(
+            page_json["data"][0]["inputTokenSemantics"],
+            INPUT_TOKEN_SEMANTICS_TOTAL
+        );
+
+        let detail = db
+            .get_request_detail("pi-semantics-ipc")?
+            .expect("request detail");
+        let detail_json =
+            serde_json::to_value(detail).map_err(|error| AppError::Database(error.to_string()))?;
+        assert_eq!(
+            detail_json["inputTokenSemantics"],
+            INPUT_TOKEN_SEMANTICS_TOTAL
+        );
         Ok(())
     }
 

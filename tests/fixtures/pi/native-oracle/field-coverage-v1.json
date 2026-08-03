@@ -1,0 +1,3000 @@
+{
+  "version": 1,
+  "piCommit": "ab366ebe94cacd419d986be454f12b1b9913aaca",
+  "schemaTarget": "ModelsConfigSchema.properties.providers.patternProperties['^.*$']",
+  "assertion": "every schema field is present in an actual TypeBox Value.Check vector and in a pinned composer execution dedicated to its provider, model, or override layer",
+  "fields": [
+    {
+      "fieldPath": "/api",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "override-fields-executed",
+        "official-defaults",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits",
+        "unmatched-override-is-ignored-by-composer",
+        "invalid-nonempty-url-is-composed",
+        "unknown-api-is-composed",
+        "unknown-thinking-fields-are-preserved",
+        "empty-url-fails-upstream-composition"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/apiKey",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "model-fields-executed",
+        "override-fields-executed",
+        "radius-oauth-requires-provider-base-url",
+        "official-defaults",
+        "later-model-first-model-fallback",
+        "duplicate-model-replaces-existing-slot",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits",
+        "unmatched-override-is-ignored-by-composer",
+        "invalid-nonempty-url-is-composed",
+        "unknown-api-is-composed",
+        "unknown-thinking-fields-are-preserved",
+        "empty-url-fails-upstream-composition"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/authHeader",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/baseUrl",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "empty-present-base-url",
+        "non-url-base-url-is-raw-string"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "override-fields-executed",
+        "official-defaults",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits",
+        "unmatched-override-is-ignored-by-composer",
+        "invalid-nonempty-url-is-composed",
+        "unknown-api-is-composed",
+        "unknown-thinking-fields-are-preserved",
+        "empty-url-fails-upstream-composition"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid",
+        "compat-nested-union-invalid-in-every-branch",
+        "compat-union-additional-field",
+        "compat-null",
+        "compat-sort-string-union-branch",
+        "compat-sort-object-union-branch",
+        "compat-sort-invalid-union-boundary"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/allowEmptySignature",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/cacheControlFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/chatTemplateKwargs",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/chatTemplateKwargs/*",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/chatTemplateKwargs/*/$var",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/chatTemplateKwargs/*/omitWhenOff",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/deferredToolsMode",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/forceAdaptiveThinking",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/maxTokensField",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid",
+        "compat-nested-union-invalid-in-every-branch",
+        "compat-sort-string-union-branch",
+        "compat-sort-object-union-branch",
+        "compat-sort-invalid-union-boundary"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/allow_fallbacks",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/data_collection",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/enforce_distillable_text",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/ignore",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/max_price",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/max_price/audio",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/max_price/completion",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/max_price/image",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/max_price/prompt",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/max_price/request",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/only",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/order",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_max_latency",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_max_latency/p50",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_max_latency/p75",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_max_latency/p90",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_max_latency/p99",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_min_throughput",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid",
+        "compat-nested-union-invalid-in-every-branch"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_min_throughput/p50",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid",
+        "compat-nested-union-invalid-in-every-branch"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_min_throughput/p75",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_min_throughput/p90",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/preferred_min_throughput/p99",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/quantizations",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/require_parameters",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/sort",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid",
+        "compat-sort-string-union-branch",
+        "compat-sort-object-union-branch",
+        "compat-sort-invalid-union-boundary"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/sort/by",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid",
+        "compat-sort-object-union-branch"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/sort/partition",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid",
+        "compat-sort-object-union-branch"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/openRouterRouting/zdr",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/requiresAssistantAfterToolResult",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/requiresReasoningContentOnAssistantMessages",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/requiresThinkingAsText",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/requiresToolResultName",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/sendSessionAffinityHeaders",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/sessionAffinityFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsCacheControlOnTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsDeveloperRole",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsEagerToolInputStreaming",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsLongCacheRetention",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsOpenAIGrammarTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsReasoningEffort",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsStore",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsStrictMode",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsStrictTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsTemperature",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-nested-union-invalid-in-every-branch"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsToolReferences",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsToolSearch",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-nested-union-invalid-in-every-branch"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/supportsUsageInStreaming",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/thinkingFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "compat-openrouter-recursive-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/vercelGatewayRouting",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/vercelGatewayRouting/only",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/compat/vercelGatewayRouting/order",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/headers",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "headers-record-valid",
+        "headers-record-invalid-value"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/headers/*",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "headers-record-valid",
+        "headers-record-invalid-value"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/modelOverrides",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "model-override-fractional-and-extra"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence",
+        "unmatched-override-is-ignored-by-composer"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "model-override-fractional-and-extra"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence",
+        "unmatched-override-is-ignored-by-composer"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/allowEmptySignature",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/cacheControlFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/chatTemplateKwargs",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/chatTemplateKwargs/*",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/chatTemplateKwargs/*/$var",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/chatTemplateKwargs/*/omitWhenOff",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/deferredToolsMode",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/forceAdaptiveThinking",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/maxTokensField",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/allow_fallbacks",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/data_collection",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/enforce_distillable_text",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/ignore",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/max_price",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/max_price/audio",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/max_price/completion",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/max_price/image",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/max_price/prompt",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/max_price/request",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/only",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/order",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_max_latency",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_max_latency/p50",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_max_latency/p75",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_max_latency/p90",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_max_latency/p99",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_min_throughput",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_min_throughput/p50",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_min_throughput/p75",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_min_throughput/p90",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/preferred_min_throughput/p99",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/quantizations",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/require_parameters",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/sort",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/sort/by",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/sort/partition",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/openRouterRouting/zdr",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/requiresAssistantAfterToolResult",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/requiresReasoningContentOnAssistantMessages",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/requiresThinkingAsText",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/requiresToolResultName",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/sendSessionAffinityHeaders",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/sessionAffinityFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsCacheControlOnTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsDeveloperRole",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsEagerToolInputStreaming",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsLongCacheRetention",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsOpenAIGrammarTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsReasoningEffort",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsStore",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsStrictMode",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsStrictTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsTemperature",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsToolReferences",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsToolSearch",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/supportsUsageInStreaming",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/thinkingFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/vercelGatewayRouting",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/vercelGatewayRouting/only",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/compat/vercelGatewayRouting/order",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/contextWindow",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "model-override-fractional-and-extra"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/cacheRead",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/cacheWrite",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/input",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/output",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/tiers",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/tiers/*/cacheRead",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/tiers/*/cacheWrite",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/tiers/*/input",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/tiers/*/inputTokensAbove",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/cost/tiers/*/output",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/headers",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence",
+        "unmatched-override-is-ignored-by-composer"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/headers/*",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence",
+        "unmatched-override-is-ignored-by-composer"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/input",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/maxTokens",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "model-override-fractional-and-extra"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "unmatched-override-is-ignored-by-composer"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/name",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/reasoning",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/thinkingLevelMap",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/thinkingLevelMap/high",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/thinkingLevelMap/low",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/thinkingLevelMap/max",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/thinkingLevelMap/medium",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/thinkingLevelMap/minimal",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/thinkingLevelMap/off",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/modelOverrides/*/thinkingLevelMap/xhigh",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "override-fields-executed"
+      ],
+      "composerBehaviorCase": "override-fields-executed"
+    },
+    {
+      "fieldPath": "/models",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "models-null",
+        "model-missing-id",
+        "model-empty-id",
+        "integer-model-numbers",
+        "fractional-model-numbers",
+        "negative-number-is-still-typebox-number",
+        "string-is-not-number",
+        "complete-cost-with-fractions",
+        "incomplete-model-cost",
+        "thinking-map-unknown-key-and-string-value",
+        "thinking-map-known-key-invalid-value",
+        "input-union-invalid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "model-fields-executed",
+        "override-fields-executed",
+        "radius-oauth-requires-provider-base-url",
+        "official-defaults",
+        "later-model-first-model-fallback",
+        "duplicate-model-replaces-existing-slot",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits",
+        "unmatched-override-is-ignored-by-composer",
+        "invalid-nonempty-url-is-composed",
+        "unknown-api-is-composed",
+        "unknown-thinking-fields-are-preserved",
+        "empty-url-fails-upstream-composition"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/api",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "model-missing-id"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "radius-oauth-requires-provider-base-url",
+        "later-model-first-model-fallback",
+        "duplicate-model-replaces-existing-slot",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/baseUrl",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "radius-oauth-requires-provider-base-url",
+        "later-model-first-model-fallback",
+        "duplicate-model-replaces-existing-slot",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/allowEmptySignature",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/cacheControlFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/chatTemplateKwargs",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/chatTemplateKwargs/*",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/chatTemplateKwargs/*/$var",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/chatTemplateKwargs/*/omitWhenOff",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/deferredToolsMode",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/forceAdaptiveThinking",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/maxTokensField",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/allow_fallbacks",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/data_collection",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/enforce_distillable_text",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/ignore",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/max_price",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/max_price/audio",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/max_price/completion",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/max_price/image",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/max_price/prompt",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/max_price/request",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/only",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/order",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_max_latency",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_max_latency/p50",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_max_latency/p75",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_max_latency/p90",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_max_latency/p99",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_min_throughput",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_min_throughput/p50",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_min_throughput/p75",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_min_throughput/p90",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/preferred_min_throughput/p99",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/quantizations",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/require_parameters",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/sort",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/sort/by",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/sort/partition",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/openRouterRouting/zdr",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/requiresAssistantAfterToolResult",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/requiresReasoningContentOnAssistantMessages",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/requiresThinkingAsText",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/requiresToolResultName",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/sendSessionAffinityHeaders",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/sessionAffinityFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsCacheControlOnTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsDeveloperRole",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsEagerToolInputStreaming",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsLongCacheRetention",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsOpenAIGrammarTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsReasoningEffort",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsStore",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsStrictMode",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsStrictTools",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsTemperature",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsToolReferences",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsToolSearch",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/supportsUsageInStreaming",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/thinkingFormat",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/vercelGatewayRouting",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/vercelGatewayRouting/only",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/compat/vercelGatewayRouting/order",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/contextWindow",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "integer-model-numbers",
+        "fractional-model-numbers"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions",
+        "incomplete-model-cost"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/cacheRead",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions",
+        "incomplete-model-cost"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/cacheWrite",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/input",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions",
+        "incomplete-model-cost"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/output",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions",
+        "incomplete-model-cost"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/tiers",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/tiers/*/cacheRead",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/tiers/*/cacheWrite",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/tiers/*/input",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/tiers/*/inputTokensAbove",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/cost/tiers/*/output",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "complete-cost-with-fractions"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/headers",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/headers/*",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/id",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "model-empty-id",
+        "integer-model-numbers",
+        "fractional-model-numbers",
+        "negative-number-is-still-typebox-number",
+        "string-is-not-number",
+        "complete-cost-with-fractions",
+        "incomplete-model-cost",
+        "thinking-map-unknown-key-and-string-value",
+        "thinking-map-known-key-invalid-value",
+        "input-union-invalid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "model-fields-executed",
+        "override-fields-executed",
+        "radius-oauth-requires-provider-base-url",
+        "official-defaults",
+        "later-model-first-model-fallback",
+        "duplicate-model-replaces-existing-slot",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits",
+        "unmatched-override-is-ignored-by-composer",
+        "invalid-nonempty-url-is-composed",
+        "unknown-api-is-composed",
+        "unknown-thinking-fields-are-preserved",
+        "empty-url-fails-upstream-composition"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/input",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "input-union-invalid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/maxTokens",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "integer-model-numbers",
+        "fractional-model-numbers",
+        "negative-number-is-still-typebox-number",
+        "string-is-not-number"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "fractional-cost-and-limits"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/name",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "override-fields-executed",
+        "duplicate-model-replaces-existing-slot",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/reasoning",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "override-fields-executed",
+        "provider-model-override-precedence"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/thinkingLevelMap",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "thinking-map-unknown-key-and-string-value",
+        "thinking-map-known-key-invalid-value"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "unknown-thinking-fields-are-preserved"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/thinkingLevelMap/high",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed",
+        "provider-model-override-precedence",
+        "unknown-thinking-fields-are-preserved"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/thinkingLevelMap/low",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "thinking-map-unknown-key-and-string-value",
+        "thinking-map-known-key-invalid-value"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/thinkingLevelMap/max",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "thinking-map-unknown-key-and-string-value"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/thinkingLevelMap/medium",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/thinkingLevelMap/minimal",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/thinkingLevelMap/off",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/models/*/thinkingLevelMap/xhigh",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "model-fields-executed"
+      ],
+      "composerBehaviorCase": "model-fields-executed"
+    },
+    {
+      "fieldPath": "/name",
+      "rawOracleCases": [
+        "all-schema-fields-valid"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    },
+    {
+      "fieldPath": "/oauth",
+      "rawOracleCases": [
+        "all-schema-fields-valid",
+        "radius-oauth",
+        "unknown-oauth-literal"
+      ],
+      "composerOracleCases": [
+        "combined-all-fields-precedence",
+        "provider-fields-inherited",
+        "radius-oauth-requires-provider-base-url"
+      ],
+      "composerBehaviorCase": "provider-fields-inherited"
+    }
+  ]
+}

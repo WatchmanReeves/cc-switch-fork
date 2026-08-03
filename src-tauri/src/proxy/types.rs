@@ -116,6 +116,17 @@ pub struct ProxyTakeoverStatus {
     pub grokbuild: bool,
     pub opencode: bool,
     pub openclaw: bool,
+    pub pi: bool,
+    pub pi_operational_state: PiTakeoverOperationalState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PiTakeoverOperationalState {
+    #[default]
+    Disabled,
+    Active,
+    Degraded,
 }
 
 /// Provider健康状态

@@ -4,6 +4,7 @@
 
 use crate::app_config::AppType;
 use crate::proxy::usage::parser::TokenUsage;
+use crate::proxy::usage::InputTokenSemantics;
 use serde_json::Value;
 
 /// 使用量解析器类型别名
@@ -31,6 +32,8 @@ pub struct UsageParserConfig {
     pub model_extractor: StreamModelExtractor,
     /// 流式 usage 事件预过滤器
     pub stream_event_filter: Option<StreamUsageEventFilter>,
+    /// Semantics of `TokenUsage::input_tokens` produced by these parsers.
+    pub input_token_semantics: InputTokenSemantics,
     /// 应用类型字符串（用于日志记录）
     pub app_type_str: &'static str,
 }
@@ -141,6 +144,7 @@ pub const CLAUDE_PARSER_CONFIG: UsageParserConfig = UsageParserConfig {
     response_parser: TokenUsage::from_claude_response,
     model_extractor: claude_model_extractor,
     stream_event_filter: Some(claude_stream_usage_event_filter),
+    input_token_semantics: InputTokenSemantics::FreshExcludesCache,
     app_type_str: "claude",
 };
 
@@ -150,6 +154,7 @@ pub const OPENAI_PARSER_CONFIG: UsageParserConfig = UsageParserConfig {
     response_parser: TokenUsage::from_openai_response,
     model_extractor: openai_model_extractor,
     stream_event_filter: Some(openai_stream_usage_event_filter),
+    input_token_semantics: InputTokenSemantics::TotalIncludesCacheBuckets,
     app_type_str: "codex",
 };
 
@@ -159,6 +164,7 @@ pub const CODEX_PARSER_CONFIG: UsageParserConfig = UsageParserConfig {
     response_parser: TokenUsage::from_codex_response_auto,
     model_extractor: codex_auto_model_extractor,
     stream_event_filter: Some(codex_stream_usage_event_filter),
+    input_token_semantics: InputTokenSemantics::TotalIncludesCacheBuckets,
     app_type_str: "codex",
 };
 
@@ -168,6 +174,7 @@ pub const GEMINI_PARSER_CONFIG: UsageParserConfig = UsageParserConfig {
     response_parser: TokenUsage::from_gemini_response,
     model_extractor: gemini_model_extractor,
     stream_event_filter: Some(gemini_stream_usage_event_filter),
+    input_token_semantics: InputTokenSemantics::TotalIncludesCacheBuckets,
     app_type_str: "gemini",
 };
 

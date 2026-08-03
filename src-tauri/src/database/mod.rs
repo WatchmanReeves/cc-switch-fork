@@ -32,6 +32,7 @@ mod schema;
 mod tests;
 
 // DAO 类型导出供外部使用
+pub(crate) use dao::pi_projections::PiProviderProjection;
 pub use dao::provider_write::{
     NewEndpoint, NewProviderAggregate, ProviderKey, ProviderRowUpdate, RenameProvider,
 };
@@ -43,6 +44,7 @@ pub(crate) use dao::proxy::{
     validate_cost_multiplier, validate_pricing_source, PRICING_SOURCE_REQUEST,
     PRICING_SOURCE_RESPONSE,
 };
+pub(crate) use dao::skill_deployments::{SkillDeployment, SkillDeploymentMethod};
 pub use dao::FailoverQueueItem;
 pub use dao::Profile;
 

@@ -1,15 +1,13 @@
-use serde_json::{json, Value};
-use std::sync::Arc;
-
-use crate::database::Database;
 use crate::error::AppError;
 use crate::services::provider::ProviderService;
+use crate::services::PromptService;
 use crate::settings;
 use crate::store::AppState;
+use serde_json::{json, Value};
 
-pub(crate) fn run_post_import_sync(db: Arc<Database>) -> Result<(), AppError> {
-    let app_state = AppState::new(db);
-    ProviderService::sync_current_to_live(&app_state)?;
+pub(crate) fn run_post_import_sync(app_state: &AppState) -> Result<(), AppError> {
+    PromptService::reconcile_pi_portable_import(app_state)?;
+    ProviderService::sync_current_to_live(app_state)?;
     settings::reload_settings()?;
     Ok(())
 }
