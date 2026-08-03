@@ -429,12 +429,13 @@ impl PiCatalogCoordinator {
         // fail-before-write error rather than a partially compensated publish.
         let previous_defaults = read_pi_native_defaults()?;
 
-        // Portable restore replaces provider rows but deliberately preserves
-        // the device-local exact-key ledger. Claims whose providers disappeared
-        // must be released before publishing a runtime, otherwise the manifest
-        // and provider aggregate sets can never converge. Their native values
-        // remain untouched and become user-owned; without a retained provider
-        // aggregate there is no safe expected value with which to delete them.
+        // A portable import can leave device-local exact-key claims behind
+        // (for example, when the restore implementation preserves local-only
+        // tables). Claims whose providers disappeared must be released before
+        // publishing a runtime, otherwise the manifest and provider aggregate
+        // sets can never converge. Their native values remain untouched and
+        // become user-owned; without a retained provider aggregate there is no
+        // safe expected value with which to delete them.
         let orphaned_claims = manifest
             .values()
             .filter(|projection| !providers.contains_key(&projection.provider_id))
@@ -1703,9 +1704,14 @@ mod tests {
             target.get_provider_aggregate(PI_APP, "local")?.is_none(),
             "portable provider rows must be replaced"
         );
+        // Canonical restore may preserve this device-local table, while the
+        // legacy importer rebuilds it empty. Seed the post-import state
+        // explicitly so this Pi-layer test continues to certify the invariant
+        // without making Canonical Restore a prerequisite of Pi support.
+        target.claim_pi_projection_key("local", "local-native")?;
         assert!(
             target.get_pi_projection("local")?.is_some(),
-            "the device-local claim is intentionally preserved by restore"
+            "the reconciliation input must contain an orphan device-local claim"
         );
 
         let state = AppState::new(target.clone());
@@ -1752,6 +1758,16 @@ mod tests {
     #[test]
     fn portable_import_of_empty_pi_catalog_releases_all_device_claims() -> Result<(), AppError> {
         let empty_source = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(empty_source.conn);
+            conn.execute(
+                "INSERT INTO providers
+                    (id, app_type, name, settings_config, meta, is_current)
+                 VALUES ('non-pi-sentinel', 'claude', 'Non-Pi sentinel', '{}', '{}', 0)",
+                [],
+            )
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        }
         let exported = empty_source.export_sql_string()?;
         let target = Arc::new(Database::memory()?);
         insert_portable_pi_provider(&target, "local")?;
