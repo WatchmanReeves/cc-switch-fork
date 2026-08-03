@@ -1336,7 +1336,7 @@ mod tests {
         let started = Instant::now();
         for _ in 0..8 {
             let output = execute_config_command(
-                "start \"\" /b cmd /D /S /C \"ping 127.0.0.1 -n 30 >nul\" & <nul set /p =ready",
+                "start \"\" /b cmd /D /S /C \"ping 127.0.0.1 -n 30 >nul\" & <nul set /p =ready & exit /b 0",
             )
             .expect("command output");
             assert_eq!(output, "ready");
