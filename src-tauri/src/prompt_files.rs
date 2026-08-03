@@ -56,6 +56,16 @@ mod tests {
             Some("SOUL.md")
         );
     }
+
+    #[test]
+    fn pi_prompt_file_uses_agents_md() {
+        let path = prompt_file_path(&AppType::Pi).expect("Pi prompt path");
+
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("AGENTS.md")
+        );
+    }
 }
 
 fn get_base_dir_with_fallback(

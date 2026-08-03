@@ -25,7 +25,7 @@ pub async fn export_config_to_file(
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let target_path = PathBuf::from(&filePath);
-        db.export_sql(&target_path)?;
+        db.export_portable_sql(&target_path)?;
         Ok::<_, AppError>(json!({
             "success": true,
             "message": "SQL exported successfully",
@@ -56,11 +56,12 @@ pub async fn import_config_from_file(
         .map_err(|error| format!("导入前恢复 Pi 直连投影失败: {error}"))?;
 
     let import_path = filePath.clone();
-    let import_result =
-        tauri::async_runtime::spawn_blocking(move || db.import_sql(&PathBuf::from(import_path)))
-            .await
-            .map_err(|error| AppError::Message(format!("SQL import task failed: {error}")))
-            .and_then(|result| result);
+    let import_result = tauri::async_runtime::spawn_blocking(move || {
+        db.import_portable_sql(&PathBuf::from(import_path))
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("SQL import task failed: {error}")))
+    .and_then(|result| result);
     let backup_id = match import_result {
         Ok(backup_id) => backup_id,
         Err(error) => {

@@ -153,6 +153,7 @@ impl PiSkillDeploymentService {
         _guard: &MutexGuard<'static, ()>,
         db: &Arc<Database>,
     ) -> Result<(), AppError> {
+        let mut failures = Vec::new();
         for skill in db.get_all_installed_skills()?.values() {
             // Portable sync and old databases may contain a poisoned directory
             // name. Reject it before any path join, but do not let that inert
@@ -166,9 +167,22 @@ impl PiSkillDeploymentService {
                 );
                 continue;
             }
-            reconcile_skill_unlocked(db, skill)?;
+            if let Err(error) = reconcile_skill_unlocked(db, skill) {
+                log::warn!(
+                    "Pi Skill '{}' could not be reconciled; continuing with independent Skills: {error}",
+                    skill.id
+                );
+                failures.push(format!("{}={error}", skill.id));
+            }
         }
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Config(format!(
+                "Pi Skill reconciliation incomplete: {}",
+                failures.join("; ")
+            )))
+        }
     }
 
     pub(crate) fn remove_before_uninstall_under_guard(
@@ -1349,5 +1363,73 @@ mod tests {
         assert_eq!(status.ownership, PiSkillOwnership::Stale);
         assert!(status.effectively_discovered);
         assert!(status.issue.is_some_and(|issue| issue.contains("previous")));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn reconcile_all_reports_failures_after_deploying_independent_skills() {
+        struct EnvGuard {
+            key: &'static str,
+            previous: Option<std::ffi::OsString>,
+        }
+        impl EnvGuard {
+            fn set(key: &'static str, value: &Path) -> Self {
+                let previous = std::env::var_os(key);
+                std::env::set_var(key, value);
+                Self { key, previous }
+            }
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+                if self.key == "CC_SWITCH_TEST_HOME" {
+                    let _ = crate::settings::reload_settings();
+                }
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvGuard::set("CC_SWITCH_TEST_HOME", temp.path());
+        crate::settings::reload_settings().expect("reload settings");
+        let pi_root = temp.path().join("pi");
+        let _pi_root = EnvGuard::set("PI_CODING_AGENT_DIR", &pi_root);
+        let ssot = SkillService::get_ssot_dir().expect("SSOT");
+        let good_source = ssot.join("good");
+        fs::create_dir_all(&good_source).expect("good source");
+        fs::write(
+            good_source.join("SKILL.md"),
+            "---\nname: good\ndescription: independent skill\n---\n",
+        )
+        .expect("manifest");
+
+        let db = Arc::new(Database::memory().expect("database"));
+        for (id, directory) in [("local:bad", "missing"), ("local:good", "good")] {
+            db.save_skill(&InstalledSkill {
+                id: id.to_string(),
+                name: directory.to_string(),
+                description: Some("reconciliation test".to_string()),
+                directory: directory.to_string(),
+                repo_owner: None,
+                repo_name: None,
+                repo_branch: None,
+                readme_url: None,
+                apps: SkillApps::only(&AppType::Pi),
+                installed_at: 1,
+                content_hash: None,
+                updated_at: 1,
+            })
+            .expect("save skill");
+        }
+
+        let error = PiSkillDeploymentService::reconcile_all(&db)
+            .expect_err("missing source must remain visible");
+        assert!(error.to_string().contains("local:bad"));
+        assert!(
+            fs::symlink_metadata(pi_root.join("skills").join("good")).is_ok(),
+            "one invalid Skill must not hide an independent valid deployment"
+        );
     }
 }

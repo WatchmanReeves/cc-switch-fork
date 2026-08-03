@@ -106,7 +106,7 @@ pub(crate) fn build_local_snapshot(
     db: &crate::database::Database,
 ) -> Result<LocalSnapshot, AppError> {
     // Export database to SQL string
-    let sql_string = db.export_sql_string_for_sync()?;
+    let sql_string = db.export_portable_sql_string_for_sync()?;
     let db_sql = sql_string.into_bytes();
 
     // Pack skills into deterministic ZIP
@@ -323,7 +323,7 @@ pub(crate) fn apply_snapshot(
     // Replace skills first, then import database; roll back skills on DB failure.
     restore_skills_zip(skills_zip)?;
 
-    if let Err(db_err) = db.import_sql_string_for_sync(sql_str) {
+    if let Err(db_err) = db.import_portable_sql_string_for_sync(sql_str) {
         if let Err(rollback_err) = restore_skills_from_backup(&skills_backup) {
             return Err(localized(
                 "sync.db_import_and_rollback_failed",

@@ -6,10 +6,39 @@ use crate::store::AppState;
 use serde_json::{json, Value};
 
 pub(crate) fn run_post_import_sync(app_state: &AppState) -> Result<(), AppError> {
-    PromptService::reconcile_pi_portable_import(app_state)?;
-    ProviderService::sync_current_to_live(app_state)?;
-    settings::reload_settings()?;
-    Ok(())
+    // Provider synchronization reopens/reconciles Pi's runtime admission after
+    // the pre-import boundary closed it. Run that recovery first, then execute
+    // every remaining independent projection even if one of them fails.
+    run_post_import_steps(
+        || ProviderService::sync_current_to_live(app_state),
+        || PromptService::reconcile_pi_portable_import(app_state),
+        settings::reload_settings,
+    )
+}
+
+fn run_post_import_steps(
+    live_sync: impl FnOnce() -> Result<(), AppError>,
+    prompt_sync: impl FnOnce() -> Result<(), AppError>,
+    settings_reload: impl FnOnce() -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    let mut failures = Vec::new();
+    for (stage, result) in [
+        ("live", live_sync()),
+        ("pi_prompt", prompt_sync()),
+        ("settings", settings_reload()),
+    ] {
+        if let Err(error) = result {
+            failures.push(format!("{stage}={error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Config(format!(
+            "post-import reconciliation incomplete: {}",
+            failures.join("; ")
+        )))
+    }
 }
 
 fn post_sync_warning<E: std::fmt::Display>(err: E) -> String {
@@ -53,8 +82,9 @@ pub(crate) fn success_payload_with_warning(backup_id: String, warning: Option<St
 
 #[cfg(test)]
 mod tests {
-    use super::{attach_warning, post_sync_warning_from_result};
+    use super::{attach_warning, post_sync_warning_from_result, run_post_import_steps};
     use serde_json::json;
+    use std::cell::RefCell;
 
     #[test]
     fn post_sync_warning_from_result_returns_none_on_success() {
@@ -91,5 +121,30 @@ mod tests {
             updated.get("warning").and_then(|v| v.as_str()),
             Some("post sync warning")
         );
+    }
+
+    #[test]
+    fn post_import_steps_recover_live_first_and_do_not_short_circuit() {
+        let calls = RefCell::new(Vec::new());
+        let error = run_post_import_steps(
+            || {
+                calls.borrow_mut().push("live");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("prompt");
+                Err(crate::error::AppError::Config("invalid AGENTS.md".into()))
+            },
+            || {
+                calls.borrow_mut().push("settings");
+                Err(crate::error::AppError::Config("reload failed".into()))
+            },
+        )
+        .expect_err("independent failures must be reported");
+
+        assert_eq!(*calls.borrow(), ["live", "prompt", "settings"]);
+        let message = error.to_string();
+        assert!(message.contains("pi_prompt="));
+        assert!(message.contains("settings="));
     }
 }

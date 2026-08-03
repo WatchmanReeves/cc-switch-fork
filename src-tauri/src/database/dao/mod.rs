@@ -5,6 +5,7 @@
 pub mod failover;
 pub mod mcp;
 pub(crate) mod pi_catalog;
+pub(crate) mod pi_portable_state;
 pub mod pi_projections;
 pub mod profiles;
 pub mod prompts;

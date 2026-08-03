@@ -1289,20 +1289,20 @@ fn sync_current_provider_for_app_respecting_takeover(
 ///
 /// For additive mode apps (OpenCode), all providers are synced instead of just the current one.
 pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
-    // Sync providers based on mode
-    for app_type in AppType::all() {
-        if matches!(app_type, AppType::Pi) {
-            crate::services::pi_catalog::PiCatalogCoordinator::reconcile_portable_import(state)?;
-            continue;
-        }
+    // Pi's portable-import boundary closes runtime admission before replacing
+    // SQLite. Recover it first so an unrelated application's broken live file
+    // cannot strand Pi in that closed state.
+    crate::services::pi_catalog::PiCatalogCoordinator::reconcile_portable_import(state)?;
+
+    // Preserve the existing fail-fast behavior for all other provider views.
+    for app_type in AppType::all().filter(|app_type| !matches!(app_type, AppType::Pi)) {
         if app_type.is_additive_mode() {
             // Provider rename and every additive live mutation share this
-            // per-app lock.  Acquire it before reading the catalog so a key
+            // per-app lock. Acquire it before reading the catalog so a key
             // cannot be renamed after this sync captured a stale provider map.
             let _guard = futures::executor::block_on(
                 state.proxy_service.lock_switch_for_app(app_type.as_str()),
             );
-            // Additive mode: sync ALL providers
             sync_all_providers_to_live(state, &app_type)?;
         } else {
             // Switch mode: sync only current provider. During proxy takeover,
@@ -1312,20 +1312,28 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
         }
     }
 
-    // MCP sync（best-effort 逐应用投影，内部已聚合失败）。错误暂存到
-    // Skill 同步之后再返回：MCP 的失败不该跳过 Skill 同步，但调用方
-    //（配置导入 / 云同步恢复）需要知道结果不完整。
-    let mcp_result = McpService::sync_all_enabled(state);
+    let mut failures = Vec::new();
+    if let Err(error) = McpService::sync_all_enabled(state) {
+        failures.push(format!("mcp={error}"));
+    }
 
-    // Skill sync
+    // Continue through all apps so one collision cannot hide unrelated Skills.
     for app_type in AppType::all() {
-        if let Err(e) = crate::services::skill::SkillService::sync_to_app(&state.db, &app_type) {
-            log::warn!("同步 Skill 到 {app_type:?} 失败: {e}");
-            // Continue syncing other apps, don't abort
+        if let Err(error) = crate::services::skill::SkillService::sync_to_app(&state.db, &app_type)
+        {
+            log::warn!("同步 Skill 到 {app_type:?} 失败: {error}");
+            failures.push(format!("skill:{}={error}", app_type.as_str()));
         }
     }
 
-    mcp_result
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Config(format!(
+            "live synchronization incomplete: {}",
+            failures.join("; ")
+        )))
+    }
 }
 
 /// Read current live settings for an app type
