@@ -8,6 +8,7 @@ import { ProviderList } from "@/components/providers/ProviderList";
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
 const providerCardRenderSpy = vi.fn();
+const availableForFailoverQueryMock = vi.fn();
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -92,6 +93,8 @@ vi.mock("@/hooks/useStreamCheck", () => ({
 vi.mock("@/lib/query/failover", () => ({
   useAutoFailoverEnabled: () => ({ data: false }),
   useFailoverQueue: () => ({ data: [] }),
+  useAvailableProvidersForFailover: (...args: unknown[]) =>
+    availableForFailoverQueryMock(...args),
   useAddToFailoverQueue: () => ({ mutate: vi.fn() }),
   useRemoveFromFailoverQueue: () => ({ mutate: vi.fn() }),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
@@ -124,6 +127,12 @@ beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
   providerCardRenderSpy.mockClear();
+  availableForFailoverQueryMock.mockReset();
+  availableForFailoverQueryMock.mockReturnValue({
+    data: [],
+    isFetching: false,
+    isError: false,
+  });
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -235,12 +244,12 @@ describe("ProviderList Component", () => {
     // Drag attributes from useSortable
     expect(
       providerCardRenderSpy.mock.calls[0][0].dragHandleProps?.attributes[
-      "data-dnd-id"
+        "data-dnd-id"
       ],
     ).toBe("b");
     expect(
       providerCardRenderSpy.mock.calls[1][0].dragHandleProps?.attributes[
-      "data-dnd-id"
+        "data-dnd-id"
       ],
     ).toBe("a");
 
@@ -306,4 +315,41 @@ describe("ProviderList Component", () => {
       screen.getByText("No providers match your search."),
     ).toBeInTheDocument();
   });
+
+  it.each([
+    { isFetching: true, isError: false },
+    { isFetching: false, isError: true },
+  ])(
+    "fails Pi failover eligibility closed while cached capability is stale",
+    ({ isFetching, isError }) => {
+      const provider = createProvider({ id: "pi-provider" });
+      availableForFailoverQueryMock.mockReturnValue({
+        data: [provider],
+        isFetching,
+        isError,
+      });
+      useDragSortMock.mockReturnValue({
+        sortedProviders: [provider],
+        sensors: [],
+        handleDragEnd: vi.fn(),
+      });
+
+      renderWithQueryClient(
+        <ProviderList
+          providers={{ [provider.id]: provider }}
+          currentProviderId=""
+          appId="pi"
+          onSwitch={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onDuplicate={vi.fn()}
+          onOpenWebsite={vi.fn()}
+        />,
+      );
+
+      expect(providerCardRenderSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ isFailoverEligible: false }),
+      );
+    },
+  );
 });

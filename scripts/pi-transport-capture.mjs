@@ -144,6 +144,7 @@ writeFileSync(
     `export { loadPromptTemplates, expandPromptTemplate } from "${PI}/packages/coding-agent/src/core/prompt-templates.ts";`,
     `export { SessionManager } from "${PI}/packages/coding-agent/src/core/session-manager.ts";`,
     `export { parseArgs } from "${PI}/packages/coding-agent/src/cli/args.ts";`,
+    `export { BUILTIN_SLASH_COMMANDS } from "${PI}/packages/coding-agent/src/core/slash-commands.ts";`,
     `export { createAllToolDefinitions } from "${PI}/packages/coding-agent/src/core/tools/index.ts";`,
   ].join("\n"),
 );
@@ -758,6 +759,13 @@ const nativeToolInventory = Object.values(
 )
   .map((tool) => tool.name)
   .sort();
+const nativeSlashCommandInventory = adapters.BUILTIN_SLASH_COMMANDS.map(
+  ({ name, description, argumentHint }) => ({
+    name,
+    description,
+    ...(argumentHint ? { argumentHint } : {}),
+  }),
+);
 
 server.close();
 console.log(
@@ -782,6 +790,7 @@ console.log(
       sessionBranchSemantics,
       malformedSessionSemantics,
       nativeToolInventory,
+      nativeSlashCommandInventory,
     },
     null,
     2,

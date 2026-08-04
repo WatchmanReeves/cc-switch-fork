@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { proxyKeys } from "@/lib/query/proxy";
+import { invalidatePiControlPlaneCaches } from "@/lib/query/mutations";
 import { getAppLabel } from "@/config/appConfig";
 
 // ========== 熔断器 Hooks ==========
@@ -51,6 +52,9 @@ export function useResetCircuitBreaker() {
       queryClient.invalidateQueries({
         queryKey: proxyKeys.status,
       });
+      if (variables.appType === "pi") {
+        queryClient.invalidateQueries({ queryKey: ["pi", "currentState"] });
+      }
     },
   });
 }
@@ -107,11 +111,14 @@ export function useFailoverQueue(appType: string) {
 /**
  * 获取可添加到队列的供应商
  */
-export function useAvailableProvidersForFailover(appType: string) {
+export function useAvailableProvidersForFailover(
+  appType: string,
+  enabled = true,
+) {
   return useQuery({
     queryKey: ["availableProvidersForFailover", appType],
     queryFn: () => failoverApi.getAvailableProvidersForFailover(appType),
-    enabled: !!appType,
+    enabled: enabled && !!appType,
   });
 }
 
@@ -120,6 +127,7 @@ export function useAvailableProvidersForFailover(appType: string) {
  */
 export function useAddToFailoverQueue() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   return useMutation({
     mutationFn: ({
@@ -140,6 +148,23 @@ export function useAddToFailoverQueue() {
         queryKey: ["providers", variables.appType],
       });
     },
+    onError: (error, variables) => {
+      if (variables.appType !== "pi") return;
+      const detail =
+        extractErrorMessage(error) ||
+        t("common.unknown", { defaultValue: "Unknown error" });
+      toast.error(
+        t("failover.toggleFailed", {
+          detail,
+          defaultValue: `Operation failed: ${detail}`,
+        }),
+      );
+    },
+    onSettled: async (_, __, variables) => {
+      if (variables.appType === "pi") {
+        await invalidatePiControlPlaneCaches(queryClient);
+      }
+    },
   });
 }
 
@@ -148,6 +173,7 @@ export function useAddToFailoverQueue() {
  */
 export function useRemoveFromFailoverQueue() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   return useMutation({
     mutationFn: ({
@@ -179,6 +205,23 @@ export function useRemoveFromFailoverQueue() {
           variables.appType,
         ],
       });
+    },
+    onError: (error, variables) => {
+      if (variables.appType !== "pi") return;
+      const detail =
+        extractErrorMessage(error) ||
+        t("common.unknown", { defaultValue: "Unknown error" });
+      toast.error(
+        t("failover.toggleFailed", {
+          detail,
+          defaultValue: `Operation failed: ${detail}`,
+        }),
+      );
+    },
+    onSettled: async (_, __, variables) => {
+      if (variables.appType === "pi") {
+        await invalidatePiControlPlaneCaches(queryClient);
+      }
     },
   });
 }
@@ -280,6 +323,9 @@ export function useSetAutoFailoverEnabled() {
       queryClient.invalidateQueries({
         queryKey: proxyKeys.status,
       });
+      if (variables.appType === "pi") {
+        void invalidatePiControlPlaneCaches(queryClient);
+      }
     },
   });
 }

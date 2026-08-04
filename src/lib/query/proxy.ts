@@ -59,8 +59,11 @@ export function useSetProxyTakeoverForApp() {
   return useMutation({
     mutationFn: ({ appType, enabled }: { appType: string; enabled: boolean }) =>
       proxyApi.setProxyTakeoverForApp(appType, enabled),
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
+      if (variables.appType === "pi") {
+        queryClient.invalidateQueries({ queryKey: ["pi", "currentState"] });
+      }
     },
   });
 }
@@ -91,6 +94,7 @@ export function useUpdateGlobalProxyConfig() {
       toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
       queryClient.invalidateQueries({ queryKey: proxyKeys.globalConfig });
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
+      queryClient.invalidateQueries({ queryKey: ["pi", "currentState"] });
     },
     onError: (error: Error) => {
       toast.error(
@@ -131,6 +135,9 @@ export function useUpdateAppProxyConfig() {
       });
       queryClient.invalidateQueries({ queryKey: ["circuitBreakerConfig"] });
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
+      if (variables.appType === "pi") {
+        queryClient.invalidateQueries({ queryKey: ["pi", "currentState"] });
+      }
     },
     onError: (error: Error) => {
       toast.error(

@@ -17,6 +17,13 @@ use url::Url;
 
 pub(crate) type PiHeaderMap = IndexMap<String, String>;
 pub(crate) type PiThinkingLevelMap = BTreeMap<String, Value>;
+const PI_OWNED_AUTH_FIELD: &str = "oauth";
+
+pub(crate) fn value_uses_pi_owned_auth(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.contains_key(PI_OWNED_AUTH_FIELD))
+}
 
 /// Pi uses JavaScript/TypeBox `Number`, not `Integer`, for model limits.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize)]
@@ -324,6 +331,10 @@ pub(crate) enum PiConfigError {
     },
     #[error("Pi model '{model_id}' contains an invalid value for thinking level '{level}'")]
     InvalidThinkingLevelValue { model_id: String, level: String },
+    #[error(
+        "Pi-owned authentication field '{json_pointer}' cannot be stored in a managed provider"
+    )]
+    PiOwnedAuthField { json_pointer: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,6 +419,7 @@ pub(crate) enum PiReasonCode {
     UnrepresentableCompat,
     NonPositiveModelLimit,
     InvalidThinkingLevel,
+    PiOwnedAuthField,
     CompositionFailed,
     GatewayCredentialUnavailable,
     UnsupportedCredentialKind,
@@ -462,6 +474,11 @@ const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "
 pub(crate) fn validate_pi_managed_provider(
     provider: &PiManagedProviderConfig,
 ) -> Result<(), PiConfigError> {
+    if provider.extra.contains_key(PI_OWNED_AUTH_FIELD) {
+        return Err(PiConfigError::PiOwnedAuthField {
+            json_pointer: format!("/{PI_OWNED_AUTH_FIELD}"),
+        });
+    }
     if provider.models.is_empty() {
         return Err(PiConfigError::ProviderHasNoModels);
     }
@@ -787,6 +804,24 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&config).expect("serialize")["api"],
             "future-wire-v9"
+        );
+    }
+
+    #[test]
+    fn managed_provider_rejects_pi_owned_oauth_state() {
+        let config: PiManagedProviderConfig = serde_json::from_value(json!({
+            "baseUrl": "https://example.com/v1",
+            "api": "anthropic-messages",
+            "oauth": "radius",
+            "models": [{"id": "model"}]
+        }))
+        .expect("the raw Pi field remains parseable for inspection");
+
+        assert_eq!(
+            validate_pi_managed_provider(&config),
+            Err(PiConfigError::PiOwnedAuthField {
+                json_pointer: "/oauth".to_string()
+            })
         );
     }
 

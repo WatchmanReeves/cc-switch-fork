@@ -905,6 +905,7 @@
       "providerBaseUrl": "供应商基础地址",
       "manageEndpoints": "管理故障转移端点",
       "credential": "凭证",
+      "credentialRequired": "请填写此预设的 API Key",
       "credentialHint": "Pi 支持字面量、$ENV 引用或 !command 表达式；延迟值仅在 Pi 解析后校验。",
       "website": "网站",
       "authHeader": "通过 Authorization 发送凭证",
@@ -933,7 +934,57 @@
       "modelRequired": "请至少添加一个模型",
       "modelAdditionalConfig": "模型 {{id}} 的附加配置（JSON）",
       "additionalConfig": "供应商附加配置（JSON）",
-      "additionalConfigHint": "未识别的 Pi 字段会原样保留；上方受控字段优先。"
+      "additionalConfigHint": "未识别的 Pi 字段会原样保留；上方受控字段优先。",
+      "stepPreset": "1. 选择供应商",
+      "presetHint": "从维护好的预设开始，或选择自定义。是否可经网关由完整配置自动判定。",
+      "stepAuth": "2. 填写凭证",
+      "managedCredentialHint": "这里创建由 CC Switch 管理的 API Key 供应商；Pi 订阅登录仍由 Pi 自己管理。",
+      "nativeLoginAlternative": "使用 Pi 订阅账号？请不要在这里创建托管供应商，改用供应商页面上的 Pi 原生登录。",
+      "stepModel": "3. 选择模型",
+      "advanced": "高级设置",
+      "endpointChangesImmediate": "端点成员关系独立于此表单，新增和移除会立即生效。"
+    },
+    "current": {
+      "title": "Pi 当前使用",
+      "description": "此卡片通过一次后端快照读取 Pi 的当前选择与实际路由。",
+      "addManaged": "添加 API Key 供应商",
+      "nativeLogin": "使用 Pi 原生登录",
+      "nativeLoginTitle": "通过 Pi 登录",
+      "nativeLoginStep1": "在终端启动 Pi。",
+      "nativeLoginStep2": "运行 /login，并完成 Pi 自己的登录流程。",
+      "nativeLoginStep3": "运行 /model 选择供应商与模型，然后刷新此页面。",
+      "nativeDirectNote": "凭证保留在 Pi 中，CC Switch 不会复制；这条通路保持直连，不会加入 CC Switch 故障转移。",
+      "changeManagedDefault": "切换托管默认项",
+      "failoverOwnsDefault": "自动故障转移已开启，托管默认项由队列主项控制；如需在此切换，请先关闭故障转移。",
+      "failoverDirectOverride": "Pi 当前未使用托管网关路由，因此自动故障转移不会作用于这次选择。",
+      "detected": "Pi 中检测到的配置（{{count}}）",
+      "diagnosticsHint": "下方是兼容性检查结果，不代表上方显示的实际路由。",
+      "ownership": {
+        "managed": "CC Switch 托管",
+        "pi_native": "Pi 原生配置",
+        "external": "外部 Pi 配置",
+        "unconfigured": "未配置"
+      },
+      "route": {
+        "gateway": "网关",
+        "direct": "直连",
+        "unavailable": "需要处理"
+      },
+      "reason": {
+        "unconfigured": "请在 Pi 中选择供应商与模型。",
+        "native_direct": "Pi 正在直连此供应商。",
+        "managed_gateway": "托管网关投影已生效。",
+        "managed_direct": "此托管供应商当前以直连模式生效。",
+        "managed_projection_mismatch": "Pi 的实时供应商值已不匹配托管直连或网关投影，请刷新或重新切换。",
+        "failover_primary_mismatch": "Pi 选择的托管供应商不是故障转移队列 P1。请关闭自动故障转移，或切回 P1。",
+        "native_catalog_unavailable": "此内置模型目录由 Pi 管理，CC Switch 无法验证当前选择的模型。",
+        "selection_unavailable": "Pi 当前选择的供应商或模型已不可用，请在 Pi 中重新选择。"
+      }
+    },
+    "failover": {
+      "unavailable": "网关未就绪",
+      "unavailableHint": "此供应商仅支持直连，或其网关能力尚未知，因此不能加入故障转移。",
+      "compatibilityHint": "Pi 仅会尝试提供相同模型 ID、且 API 与请求特征兼容的后续供应商。加入队列不代表每个供应商都能接管所有模型。"
     },
     "native": {
       "title": "Pi 原生模型目录",

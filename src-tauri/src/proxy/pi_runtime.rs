@@ -137,6 +137,15 @@ pub(crate) struct PiRuntimeBuild {
 }
 
 impl PiRuntimeSnapshot {
+    pub(crate) fn gateway_projection_for(
+        &self,
+        provider_id: &str,
+        provider_key: &str,
+    ) -> Option<Value> {
+        self.providers.get(provider_id)?;
+        self.native_projection.0.get(provider_key)?.clone()
+    }
+
     pub(crate) fn token_matches(&self, candidate: &str) -> bool {
         self.gateway_token.constant_time_eq(candidate)
     }
@@ -151,6 +160,11 @@ impl PiRuntimeSnapshot {
             .routes
             .get(route_token)
             .ok_or_else(|| AppError::NotFound("unknown Pi gateway provider route".to_string()))?;
+        ensure_auto_failover_route_primary(
+            self.app_config.auto_failover_enabled,
+            &self.failover_ids,
+            &binding.provider_id,
+        )?;
         let primary = self
             .providers
             .get(&binding.provider_id)
@@ -193,6 +207,23 @@ impl PiRuntimeSnapshot {
             candidates,
         })
     }
+}
+
+fn ensure_auto_failover_route_primary(
+    auto_failover_enabled: bool,
+    failover_ids: &[String],
+    provider_id: &str,
+) -> Result<(), AppError> {
+    if !auto_failover_enabled {
+        return Ok(());
+    }
+    if failover_ids.first().map(String::as_str) != Some(provider_id) {
+        return Err(AppError::Conflict(
+            "Pi's current managed provider is not the automatic failover queue primary; disable failover or switch back to queue P1"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn expand_model_attempts(model: &PiRuntimeModel, is_failover: bool) -> Vec<PiRequestCandidate> {
@@ -383,10 +414,23 @@ pub(crate) fn build_pi_runtime(
         providers.insert(provider_id, PiRuntimeProvider { models });
     }
 
-    let failover_ids = db
+    let persisted_failover_ids = db
         .get_failover_queue(PI_APP)?
         .into_iter()
         .map(|item| item.provider_id)
+        .collect::<Vec<_>>();
+    if app_config.auto_failover_enabled
+        && persisted_failover_ids
+            .first()
+            .is_some_and(|provider_id| !providers.contains_key(provider_id))
+    {
+        return Err(AppError::Conflict(
+            "Pi failover queue primary is not gateway-ready".to_string(),
+        ));
+    }
+    let failover_ids = persisted_failover_ids
+        .into_iter()
+        .filter(|provider_id| providers.contains_key(provider_id))
         .collect();
     Ok(PiRuntimeBuild {
         snapshot: Arc::new(PiRuntimeSnapshot {
@@ -1220,6 +1264,20 @@ impl Drop for CommandTree {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn auto_failover_accepts_only_the_queue_primary_route() {
+        let queue = vec!["primary".to_string(), "secondary".to_string()];
+        ensure_auto_failover_route_primary(false, &queue, "secondary")
+            .expect("ordinary gateway routing follows Pi's selected provider");
+        ensure_auto_failover_route_primary(true, &queue, "primary")
+            .expect("queue P1 is the owned failover route");
+
+        let error = ensure_auto_failover_route_primary(true, &queue, "secondary")
+            .expect_err("an external managed switch must not silently replace queue P1");
+        assert!(error.to_string().contains("queue primary"));
+        assert!(ensure_auto_failover_route_primary(true, &[], "primary").is_err());
+    }
 
     #[test]
     fn native_projection_debug_exposes_only_key_presence() {

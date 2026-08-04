@@ -3,8 +3,42 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PiProviderForm } from "@/components/providers/forms/PiProviderForm";
 import composerOracle from "../fixtures/pi/native-oracle/composer-oracle-v1.json";
+import { http, HttpResponse } from "msw";
+import { server } from "../msw/server";
+
+const TAURI_ENDPOINT = "http://tauri.local";
 
 describe("PiProviderForm", () => {
+  it("applies a maintained preset without creating a Pi-owned provider key", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PiProviderForm
+        appId="pi"
+        submitLabel="Save preset"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Kimi", { selector: "span" }));
+    fireEvent.change(screen.getByLabelText("pi.form.credential"), {
+      target: { value: "literal-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save preset" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      providerKey: "cc-switch-kimi",
+      name: "Kimi",
+      presetCategory: "cn_official",
+    });
+    expect(JSON.parse(onSubmit.mock.calls[0][0].settingsConfig)).toMatchObject({
+      api: "openai-completions",
+      baseUrl: "https://api.moonshot.cn/v1",
+      apiKey: "literal-key",
+    });
+  });
+
   it("submits only explicit model fields and leaves pinned defaults to Pi", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
 
@@ -17,6 +51,9 @@ describe("PiProviderForm", () => {
       />,
     );
 
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerPreset.custom" }),
+    );
     fireEvent.change(screen.getByPlaceholderText("my-provider"), {
       target: { value: "verified-provider" },
     });
@@ -145,6 +182,9 @@ describe("PiProviderForm", () => {
       />,
     );
 
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerPreset.custom" }),
+    );
     fireEvent.change(screen.getByPlaceholderText("my-provider"), {
       target: { value: "endpoint-provider" },
     });
@@ -183,5 +223,61 @@ describe("PiProviderForm", () => {
         url: "https://failover.example/v1",
       }),
     });
+  });
+
+  it("treats persisted endpoint membership as authoritative in edit mode", async () => {
+    let endpointReads = 0;
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/get_custom_endpoints`, () => {
+        endpointReads += 1;
+        return HttpResponse.json([]);
+      }),
+    );
+
+    render(
+      <PiProviderForm
+        appId="pi"
+        providerId="managed"
+        submitLabel="Save managed provider"
+        onSubmit={vi.fn()}
+        onCancel={() => {}}
+        initialData={{
+          name: "Managed",
+          settingsConfig: {
+            api: "openai-responses",
+            baseUrl: "https://api.example.com/v1",
+            models: [{ id: "model" }],
+          },
+          meta: {
+            custom_endpoints: {
+              "https://removed.example/v1": {
+                url: "https://removed.example/v1",
+                addedAt: null,
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "pi.form.manageEndpoints" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("https://removed.example/v1"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(endpointReads).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "pi.form.manageEndpoints" }),
+    );
+    await waitFor(() => expect(endpointReads).toBe(2));
+    expect(
+      screen.queryByText("https://removed.example/v1"),
+    ).not.toBeInTheDocument();
   });
 });

@@ -20,10 +20,19 @@ import {
   GROKBUILD_OFFICIAL_PROVIDER_ID,
 } from "@/utils/providerCapabilities";
 
-const invalidatePiNativeCaches = async (queryClient: QueryClient) => {
+export const invalidatePiControlPlaneCaches = async (
+  queryClient: QueryClient,
+) => {
   await Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["pi", "nativeCatalog"] }),
-    queryClient.invalidateQueries({ queryKey: ["pi", "nativeDefaults"] }),
+    queryClient.invalidateQueries({ queryKey: ["pi"] }),
+    queryClient.invalidateQueries({ queryKey: ["providers", "pi"] }),
+    queryClient.invalidateQueries({
+      queryKey: ["availableProvidersForFailover", "pi"],
+    }),
+    queryClient.invalidateQueries({ queryKey: ["failoverQueue", "pi"] }),
+    queryClient.invalidateQueries({ queryKey: ["autoFailoverEnabled", "pi"] }),
+    queryClient.invalidateQueries({ queryKey: proxyKeys.appConfig("pi") }),
+    queryClient.invalidateQueries({ queryKey: proxyKeys.status }),
   ]);
 };
 
@@ -141,10 +150,6 @@ export const useAddProviderMutation = (appId: AppId) => {
       if (appId === "hermes") {
         await invalidateHermesProviderCaches(queryClient);
       }
-      if (appId === "pi") {
-        await invalidatePiNativeCaches(queryClient);
-      }
-
       try {
         await providersApi.updateTrayMenu();
       } catch (trayError) {
@@ -171,6 +176,11 @@ export const useAddProviderMutation = (appId: AppId) => {
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiControlPlaneCaches(queryClient);
+      }
     },
   });
 };
@@ -212,9 +222,6 @@ export const useUpdateProviderMutation = (appId: AppId) => {
       if (appId === "hermes") {
         await invalidateHermesProviderCaches(queryClient);
       }
-      if (appId === "pi") {
-        await invalidatePiNativeCaches(queryClient);
-      }
       toast.success(
         t("notifications.updateSuccess", {
           defaultValue: "供应商更新成功",
@@ -232,6 +239,11 @@ export const useUpdateProviderMutation = (appId: AppId) => {
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiControlPlaneCaches(queryClient);
+      }
     },
   });
 };
@@ -271,10 +283,6 @@ export const useDeleteProviderMutation = (appId: AppId) => {
       if (appId === "hermes") {
         await invalidateHermesProviderCaches(queryClient);
       }
-      if (appId === "pi") {
-        await invalidatePiNativeCaches(queryClient);
-      }
-
       try {
         await providersApi.updateTrayMenu();
       } catch (trayError) {
@@ -301,6 +309,11 @@ export const useDeleteProviderMutation = (appId: AppId) => {
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiControlPlaneCaches(queryClient);
+      }
     },
   });
 };
@@ -348,10 +361,6 @@ export const useSwitchProviderMutation = (appId: AppId) => {
       if (appId === "hermes") {
         await invalidateHermesProviderCaches(queryClient);
       }
-      if (appId === "pi") {
-        await invalidatePiNativeCaches(queryClient);
-      }
-
       try {
         await providersApi.updateTrayMenu();
       } catch (trayError) {
@@ -380,6 +389,11 @@ export const useSwitchProviderMutation = (appId: AppId) => {
           },
         },
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiControlPlaneCaches(queryClient);
+      }
     },
   });
 };

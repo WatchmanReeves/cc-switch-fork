@@ -312,6 +312,16 @@ export const handlers = [
     success({ success: true }),
   ),
 
+  http.post(`${TAURI_ENDPOINT}/get_pi_native_catalog`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_pi_native_defaults`, () => success({})),
+  http.post(`${TAURI_ENDPOINT}/get_pi_current_state`, () =>
+    success({
+      ownership: "unconfigured",
+      activeRoute: "unavailable",
+      routeReason: "unconfigured",
+    }),
+  ),
+
   // Proxy status (for SettingsPage / ProxyPanel hooks)
   http.post(`${TAURI_ENDPOINT}/get_proxy_status`, () =>
     success({
@@ -345,6 +355,9 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () => success(false)),
 
   // Failover / circuit breaker defaults
+  http.post(`${TAURI_ENDPOINT}/get_auto_failover_enabled`, () =>
+    success(false),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_failover_queue`, () => success([])),
   http.post(`${TAURI_ENDPOINT}/get_available_providers_for_failover`, () =>
     success([]),

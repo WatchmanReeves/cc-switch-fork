@@ -906,6 +906,7 @@
       "providerBaseUrl": "供應商基礎 URL",
       "manageEndpoints": "管理故障轉移端點",
       "credential": "憑證",
+      "credentialRequired": "請填寫此預設的 API Key",
       "credentialHint": "Pi 支援字面值、$ENV 參照或 !command 運算式；延遲值僅在 Pi 解析後驗證。",
       "website": "網站",
       "authHeader": "透過 Authorization 傳送憑證",
@@ -934,7 +935,57 @@
       "modelRequired": "請至少新增一個模型",
       "modelAdditionalConfig": "模型 {{id}} 的附加設定（JSON）",
       "additionalConfig": "供應商附加設定（JSON）",
-      "additionalConfigHint": "無法識別的 Pi 欄位會原樣保留；以上受控欄位優先。"
+      "additionalConfigHint": "無法識別的 Pi 欄位會原樣保留；以上受控欄位優先。",
+      "stepPreset": "1. 選擇供應商",
+      "presetHint": "從維護好的預設開始，或選擇自訂。是否可經閘道由完整設定自動判定。",
+      "stepAuth": "2. 填寫憑證",
+      "managedCredentialHint": "此處建立由 CC Switch 管理的 API Key 供應商；Pi 訂閱登入仍由 Pi 管理。",
+      "nativeLoginAlternative": "使用 Pi 訂閱帳號？請勿在此建立受管供應商，改用供應商頁面上的 Pi 原生登入。",
+      "stepModel": "3. 選擇模型",
+      "advanced": "進階設定",
+      "endpointChangesImmediate": "端點成員關係獨立於此表單，新增與移除會立即生效。"
+    },
+    "current": {
+      "title": "Pi 目前使用",
+      "description": "此卡片透過一次後端快照讀取 Pi 的目前選擇與實際路由。",
+      "addManaged": "新增 API Key 供應商",
+      "nativeLogin": "使用 Pi 原生登入",
+      "nativeLoginTitle": "透過 Pi 登入",
+      "nativeLoginStep1": "在終端機啟動 Pi。",
+      "nativeLoginStep2": "執行 /login，並完成 Pi 自己的登入流程。",
+      "nativeLoginStep3": "執行 /model 選擇供應商與模型，然後重新整理此頁面。",
+      "nativeDirectNote": "憑證保留在 Pi 中，CC Switch 不會複製；此路徑保持直接連線，不會加入 CC Switch 故障轉移。",
+      "changeManagedDefault": "切換受管預設項目",
+      "failoverOwnsDefault": "自動故障轉移已啟用，受管預設項目由佇列主項目控制；如要在此切換，請先停用故障轉移。",
+      "failoverDirectOverride": "Pi 目前未使用受管閘道路由，因此自動故障轉移不會套用到這次選擇。",
+      "detected": "Pi 中偵測到的設定（{{count}}）",
+      "diagnosticsHint": "下方是相容性檢查結果，不代表上方顯示的實際路由。",
+      "ownership": {
+        "managed": "CC Switch 受管",
+        "pi_native": "Pi 原生設定",
+        "external": "外部 Pi 設定",
+        "unconfigured": "未設定"
+      },
+      "route": {
+        "gateway": "閘道",
+        "direct": "直接連線",
+        "unavailable": "需要處理"
+      },
+      "reason": {
+        "unconfigured": "請在 Pi 中選擇供應商與模型。",
+        "native_direct": "Pi 正在直接連線至此供應商。",
+        "managed_gateway": "受管閘道投影已生效。",
+        "managed_direct": "此受管供應商目前以直接連線模式生效。",
+        "managed_projection_mismatch": "Pi 的即時供應商值已不符合受管直接連線或閘道投影，請重新整理或再次切換。",
+        "failover_primary_mismatch": "Pi 選取的受管供應商不是故障轉移佇列 P1。請停用自動故障轉移，或切回 P1。",
+        "native_catalog_unavailable": "此內建模型目錄由 Pi 管理，CC Switch 無法驗證目前選取的模型。",
+        "selection_unavailable": "Pi 目前選擇的供應商或模型已無法使用，請在 Pi 中重新選擇。"
+      }
+    },
+    "failover": {
+      "unavailable": "閘道尚未就緒",
+      "unavailableHint": "此供應商僅支援直接連線，或其閘道能力仍未知，因此無法加入故障轉移。",
+      "compatibilityHint": "Pi 只會嘗試提供相同模型 ID，且 API 與請求特徵相容的後續供應商。加入佇列不代表每個供應商都能接手所有模型。"
     },
     "native": {
       "title": "Pi 原生模型目錄",

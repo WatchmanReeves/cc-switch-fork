@@ -4,7 +4,9 @@
 
 use crate::app_config::AppType;
 use crate::database::FailoverQueueItem;
+use crate::pi_config::native_settings::PiNativeDefaultsReceipt;
 use crate::provider::Provider;
+use crate::services::pi_catalog::{PiActiveRoute, PiCatalogCoordinator};
 use crate::store::AppState;
 use std::str::FromStr;
 use tauri::Emitter;
@@ -15,6 +17,14 @@ pub async fn get_failover_queue(
     state: tauri::State<'_, AppState>,
     app_type: String,
 ) -> Result<Vec<FailoverQueueItem>, String> {
+    if app_type == AppType::Pi.as_str() {
+        let _guard = state
+            .proxy_service
+            .lock_switch_for_app(AppType::Pi.as_str())
+            .await;
+        return PiCatalogCoordinator::failover_queue_with_admission(state.inner())
+            .map_err(|error| error.to_string());
+    }
     state
         .db
         .get_failover_queue(&app_type)
@@ -27,6 +37,17 @@ pub async fn get_available_providers_for_failover(
     state: tauri::State<'_, AppState>,
     app_type: String,
 ) -> Result<Vec<Provider>, String> {
+    if app_type == AppType::Pi.as_str() {
+        let _guard = state
+            .proxy_service
+            .lock_switch_for_app(AppType::Pi.as_str())
+            .await;
+        let providers = state
+            .db
+            .get_available_providers_for_failover(&app_type)
+            .map_err(|error| error.to_string())?;
+        return filter_proxyable_pi_providers(state.inner(), providers);
+    }
     state
         .db
         .get_available_providers_for_failover(&app_type)
@@ -41,47 +62,11 @@ pub async fn add_to_failover_queue(
     provider_id: String,
 ) -> Result<(), String> {
     if app_type == "pi" {
-        let _guard = state
+        let guard = state
             .proxy_service
             .lock_switch_for_app(AppType::Pi.as_str())
             .await;
-        if state
-            .db
-            .get_provider_aggregate("pi", &provider_id)
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            return Err(format!("Pi provider does not exist: {provider_id}"));
-        }
-        let was_member = state
-            .db
-            .is_in_failover_queue("pi", &provider_id)
-            .map_err(|error| error.to_string())?;
-        let epoch = state.proxy_service.begin_pi_catalog_mutation().await;
-        if let Err(error) = state.db.add_to_failover_queue("pi", &provider_id) {
-            let _ = state
-                .proxy_service
-                .reconcile_pi_runtime_at_epoch(epoch)
-                .await;
-            return Err(error.to_string());
-        }
-        if let Err(error) = state
-            .proxy_service
-            .reconcile_pi_runtime_at_epoch(epoch)
-            .await
-        {
-            if !was_member {
-                let _ = state.db.remove_from_failover_queue("pi", &provider_id);
-            }
-            let rollback_epoch = state.proxy_service.begin_pi_catalog_mutation().await;
-            let _ = state
-                .proxy_service
-                .reconcile_pi_runtime_at_epoch(rollback_epoch)
-                .await;
-            return Err(format!(
-                "Pi failover queue changed but runtime publication failed: {error}"
-            ));
-        }
+        set_pi_failover_membership_under_switch_guard(state.inner(), &guard, &provider_id, true)?;
         return Ok(());
     }
     state
@@ -98,39 +83,11 @@ pub async fn remove_from_failover_queue(
     provider_id: String,
 ) -> Result<(), String> {
     if app_type == "pi" {
-        let _guard = state
+        let guard = state
             .proxy_service
             .lock_switch_for_app(AppType::Pi.as_str())
             .await;
-        let was_member = state
-            .db
-            .is_in_failover_queue("pi", &provider_id)
-            .map_err(|error| error.to_string())?;
-        let epoch = state.proxy_service.begin_pi_catalog_mutation().await;
-        if let Err(error) = state.db.remove_from_failover_queue("pi", &provider_id) {
-            let _ = state
-                .proxy_service
-                .reconcile_pi_runtime_at_epoch(epoch)
-                .await;
-            return Err(error.to_string());
-        }
-        if let Err(error) = state
-            .proxy_service
-            .reconcile_pi_runtime_at_epoch(epoch)
-            .await
-        {
-            if was_member {
-                let _ = state.db.add_to_failover_queue("pi", &provider_id);
-            }
-            let rollback_epoch = state.proxy_service.begin_pi_catalog_mutation().await;
-            let _ = state
-                .proxy_service
-                .reconcile_pi_runtime_at_epoch(rollback_epoch)
-                .await;
-            return Err(format!(
-                "Pi failover queue changed but runtime publication failed: {error}"
-            ));
-        }
+        set_pi_failover_membership_under_switch_guard(state.inner(), &guard, &provider_id, false)?;
         return Ok(());
     }
     state
@@ -309,38 +266,49 @@ async fn set_pi_auto_failover_enabled_inner(
         crate::services::pi_catalog::PiCatalogCoordinator::current_native_provider(state)
             .map_err(|error| error.to_string())?;
     let mut auto_added = None;
-    let mut switched_primary = false;
+    let mut switched_defaults_receipt = None;
     let selected_provider = if enabled {
-        let previous_provider = previous_provider.clone().ok_or_else(|| {
-            "Pi has no current provider, so failover cannot select queue P1".to_string()
-        })?;
-        let mut queue = state
-            .db
-            .get_failover_queue("pi")
+        // Persisted queue membership is the ownership boundary. An empty
+        // runtime-admission view can also mean that an existing P1 was fenced
+        // by native OAuth or external drift, so it must never trigger seeding.
+        let current = PiCatalogCoordinator::current_state_under_switch_guard(state, &guard)
             .map_err(|error| error.to_string())?;
-        if queue.is_empty() {
-            state
-                .db
-                .add_to_failover_queue("pi", &previous_provider)
-                .map_err(|error| error.to_string())?;
-            auto_added = Some(previous_provider.clone());
-            queue = state
-                .db
-                .get_failover_queue("pi")
-                .map_err(|error| error.to_string())?;
-        }
-        let primary = queue
-            .first()
-            .map(|item| item.provider_id.clone())
-            .ok_or_else(|| "Pi failover queue is empty".to_string())?;
-        if primary != previous_provider {
-            if let Err(error) = set_pi_default_under_switch_guard(state, &guard, &primary) {
-                if let Some(provider_id) = auto_added.take() {
-                    let _ = state.db.remove_from_failover_queue("pi", &provider_id);
-                }
-                return Err(error);
+        let queue = PiCatalogCoordinator::failover_queue_with_admission(state)
+            .map_err(|error| error.to_string())?;
+        let primary = if let Some(primary) = queue.first() {
+            if primary.gateway_ready != Some(true) {
+                return Err(format!(
+                    "Pi failover queue primary '{}' is not gateway-ready; remove or repair it before enabling automatic failover",
+                    primary.provider_id
+                ));
             }
-            switched_primary = true;
+            primary.provider_id.clone()
+        } else {
+            let seed_provider = previous_provider.clone().ok_or_else(|| {
+                "Pi has no managed current provider and the failover queue is empty".to_string()
+            })?;
+            if !PiCatalogCoordinator::gateway_admission_ready(state, &seed_provider)
+                .map_err(|error| error.to_string())?
+            {
+                return Err(
+                    "Pi's current provider is direct-only and cannot seed failover".to_string(),
+                );
+            }
+            set_pi_failover_membership_under_switch_guard(state, &guard, &seed_provider, true)?;
+            auto_added = Some(seed_provider.clone());
+            seed_provider
+        };
+        let selection_needs_repair = current.managed_provider_id.as_deref() != Some(&primary)
+            || current.active_route == PiActiveRoute::Unavailable;
+        if previous_provider.as_deref() != Some(primary.as_str()) || selection_needs_repair {
+            match set_pi_default_under_switch_guard(state, &guard, &primary) {
+                Ok(receipt) => switched_defaults_receipt = Some(receipt),
+                Err(error) => {
+                    let queue_rollback =
+                        rollback_auto_added_pi_failover_member(state, &guard, auto_added.take());
+                    return Err(with_pi_failover_rollback(error, queue_rollback));
+                }
+            }
         }
         Some(primary)
     } else {
@@ -349,44 +317,49 @@ async fn set_pi_auto_failover_enabled_inner(
 
     let mut next = previous_config.clone();
     next.auto_failover_enabled = enabled;
+    let native_auth_owns_claim = !enabled
+        && PiCatalogCoordinator::native_auth_owns_managed_claim(state)
+            .map_err(|error| error.to_string())?;
     let epoch = state.proxy_service.begin_pi_catalog_mutation().await;
     if let Err(error) = crate::settings::update_pi_proxy_settings(next) {
-        if let Some(provider_id) = auto_added.take() {
-            let _ = state.db.remove_from_failover_queue("pi", &provider_id);
-        }
-        let rollback = rollback_pi_failover_primary(
-            state,
-            &guard,
-            previous_provider.as_deref(),
-            switched_primary,
-            Some(epoch),
-        )
-        .await;
-        return Err(with_pi_failover_rollback(error.to_string(), rollback));
-    }
-    if let Err(error) = state
-        .proxy_service
-        .reconcile_pi_runtime_at_epoch(epoch)
-        .await
-    {
-        let settings_rollback = crate::settings::update_pi_proxy_settings(previous_config)
-            .err()
-            .map(|rollback_error| rollback_error.to_string());
-        if let Some(provider_id) = auto_added.take() {
-            let _ = state.db.remove_from_failover_queue("pi", &provider_id);
-        }
         let primary_rollback = rollback_pi_failover_primary(
             state,
             &guard,
-            previous_provider.as_deref(),
-            switched_primary,
-            None,
+            switched_defaults_receipt.as_ref(),
+            Some(epoch),
         )
         .await;
-        let rollback = settings_rollback.or(primary_rollback);
-        return Err(with_pi_failover_rollback(
+        let queue_rollback =
+            rollback_auto_added_pi_failover_member(state, &guard, auto_added.take());
+        return Err(with_pi_failover_rollbacks(
+            error.to_string(),
+            [primary_rollback, queue_rollback],
+        ));
+    }
+    let reconcile = if native_auth_owns_claim {
+        state
+            .proxy_service
+            .close_pi_runtime_at_epoch(epoch)
+            .await
+            .map(|_| Vec::new())
+    } else {
+        state
+            .proxy_service
+            .reconcile_pi_runtime_at_epoch(epoch)
+            .await
+    };
+    if let Err(error) = reconcile {
+        let settings_rollback = crate::settings::update_pi_proxy_settings(previous_config)
+            .err()
+            .map(|rollback_error| rollback_error.to_string());
+        let primary_rollback =
+            rollback_pi_failover_primary(state, &guard, switched_defaults_receipt.as_ref(), None)
+                .await;
+        let queue_rollback =
+            rollback_auto_added_pi_failover_member(state, &guard, auto_added.take());
+        return Err(with_pi_failover_rollbacks(
             format!("Pi failover preference changed but runtime publication failed: {error}"),
-            rollback,
+            [settings_rollback, primary_rollback, queue_rollback],
         ));
     }
 
@@ -397,7 +370,7 @@ fn set_pi_default_under_switch_guard(
     state: &AppState,
     guard: &tokio::sync::OwnedMutexGuard<()>,
     provider_id: &str,
-) -> Result<(), String> {
+) -> Result<PiNativeDefaultsReceipt, String> {
     let aggregate = state
         .db
         .get_provider_aggregate(AppType::Pi.as_str(), provider_id)
@@ -419,35 +392,38 @@ fn set_pi_default_under_switch_guard(
             model_id,
         },
     )
-    .map(|_| ())
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?
+    .into_native_defaults_receipt()
+    .ok_or_else(|| "Pi default switch did not return a native rollback receipt".to_string())
 }
 
 async fn rollback_pi_failover_primary(
     state: &AppState,
     guard: &tokio::sync::OwnedMutexGuard<()>,
-    previous_provider: Option<&str>,
-    switched_primary: bool,
+    defaults_receipt: Option<&PiNativeDefaultsReceipt>,
     pending_epoch: Option<u64>,
 ) -> Option<String> {
-    if switched_primary {
-        let previous_provider =
-            previous_provider.expect("switching P1 requires a previous Pi provider");
-        return set_pi_default_under_switch_guard(state, guard, previous_provider)
-            .err()
-            .map(|error| format!("primary rollback failed: {error}"));
+    let mut failures = Vec::new();
+    if let Some(receipt) = defaults_receipt {
+        if let Err(error) =
+            PiCatalogCoordinator::rollback_native_defaults_under_switch_guard(state, guard, receipt)
+        {
+            failures.push(format!("native-default rollback failed: {error}"));
+        }
     }
 
     let epoch = match pending_epoch {
         Some(epoch) => epoch,
         None => state.proxy_service.begin_pi_catalog_mutation().await,
     };
-    state
+    if let Err(error) = state
         .proxy_service
         .reconcile_pi_runtime_at_epoch(epoch)
         .await
-        .err()
-        .map(|error| format!("runtime rollback failed: {error}"))
+    {
+        failures.push(format!("runtime rollback failed: {error}"));
+    }
+    (!failures.is_empty()).then(|| failures.join("; "))
 }
 
 fn with_pi_failover_rollback(error: String, rollback: Option<String>) -> String {
@@ -457,13 +433,71 @@ fn with_pi_failover_rollback(error: String, rollback: Option<String>) -> String 
     }
 }
 
+fn with_pi_failover_rollbacks<const N: usize>(
+    error: String,
+    rollbacks: [Option<String>; N],
+) -> String {
+    let failures = rollbacks.into_iter().flatten().collect::<Vec<_>>();
+    if failures.is_empty() {
+        error
+    } else {
+        format!("{error}; {}", failures.join("; "))
+    }
+}
+
+fn set_pi_failover_membership_under_switch_guard(
+    state: &AppState,
+    guard: &tokio::sync::OwnedMutexGuard<()>,
+    provider_id: &str,
+    in_failover_queue: bool,
+) -> Result<(), String> {
+    PiCatalogCoordinator::apply_under_switch_guard(
+        state,
+        guard,
+        crate::services::pi_catalog::PiCatalogMutation::SetFailoverMembership {
+            provider_id: provider_id.to_string(),
+            in_failover_queue,
+        },
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+fn rollback_auto_added_pi_failover_member(
+    state: &AppState,
+    guard: &tokio::sync::OwnedMutexGuard<()>,
+    provider_id: Option<String>,
+) -> Option<String> {
+    provider_id.and_then(|provider_id| {
+        set_pi_failover_membership_under_switch_guard(state, guard, &provider_id, false)
+            .err()
+            .map(|error| format!("queue rollback failed: {error}"))
+    })
+}
+
+fn filter_proxyable_pi_providers(
+    state: &AppState,
+    providers: Vec<Provider>,
+) -> Result<Vec<Provider>, String> {
+    let provider_ids = providers
+        .iter()
+        .map(|provider| provider.id.clone())
+        .collect::<Vec<_>>();
+    let admission = PiCatalogCoordinator::gateway_admission_snapshot(state, &provider_ids)
+        .map_err(|error| error.to_string())?;
+    Ok(providers
+        .into_iter()
+        .filter(|provider| admission.get(&provider.id).copied().unwrap_or(false))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::Database;
     use crate::provider::ProviderMutationInput;
     use crate::services::pi_catalog::{PiCatalogCoordinator, PiCatalogMutation};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::sync::Arc;
 
     struct TestHome(Option<std::ffi::OsString>);
@@ -551,11 +585,334 @@ mod tests {
             Some("provider-b")
         );
         assert!(crate::settings::get_pi_proxy_settings().auto_failover_enabled);
+        let error = state
+            .proxy_service
+            .set_takeover_for_app("pi", false)
+            .await
+            .expect_err("takeover cannot be disabled while Pi failover owns queue P1");
+        assert!(error.contains("disable Pi automatic failover"));
+        set_pi_auto_failover_enabled_inner(&state, false)
+            .await
+            .map_err(crate::error::AppError::Message)?;
         state
             .proxy_service
             .set_takeover_for_app("pi", false)
             .await
             .map_err(crate::error::AppError::Message)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn enabling_pi_failover_repairs_an_unavailable_current_model(
+    ) -> Result<(), crate::error::AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(temp.path().join("pi-agent").to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings)?;
+
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider-a"),
+                provider_key: "provider-a".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+        let mut proxy_config = state.db.get_global_proxy_config().await?;
+        proxy_config.listen_port = 0;
+        state.db.update_global_proxy_config(proxy_config).await?;
+        state
+            .proxy_service
+            .set_takeover_for_app("pi", true)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "provider-a",
+            "missing-model",
+        )?;
+
+        set_pi_auto_failover_enabled_inner(&state, true)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+
+        let defaults = crate::pi_config::native_settings::read_pi_native_defaults()?;
+        assert_eq!(defaults.default_provider.as_deref(), Some("provider-a"));
+        assert_eq!(defaults.default_model.as_deref(), Some("provider-a-model"));
+        assert!(crate::settings::get_pi_proxy_settings().auto_failover_enabled);
+        set_pi_auto_failover_enabled_inner(&state, false)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+        state
+            .proxy_service
+            .set_takeover_for_app("pi", false)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn disabling_pi_failover_fences_runtime_after_native_oauth_takeover(
+    ) -> Result<(), crate::error::AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(pi_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings)?;
+
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider"),
+                provider_key: "provider".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+        state.db.add_to_failover_queue("pi", "provider")?;
+        let mut proxy_config = state.db.get_global_proxy_config().await?;
+        proxy_config.listen_port = 0;
+        state.db.update_global_proxy_config(proxy_config).await?;
+        state
+            .proxy_service
+            .set_takeover_for_app("pi", true)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+        set_pi_auto_failover_enabled_inner(&state, true)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+
+        let oauth = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "claude"}]
+        });
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"provider": oauth.clone()}
+            }))
+            .expect("serialize Pi OAuth"),
+        )
+        .expect("replace managed projection");
+
+        set_pi_auto_failover_enabled_inner(&state, false)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+
+        assert!(!crate::settings::get_pi_proxy_settings().auto_failover_enabled);
+        assert_eq!(
+            state
+                .proxy_service
+                .active_pi_gateway_projection("provider", "provider"),
+            None,
+            "native OAuth takeover must fence the local route"
+        );
+        let live: Value = serde_json::from_slice(
+            &std::fs::read(pi_dir.join("models.json")).expect("read Pi models"),
+        )
+        .expect("parse Pi models");
+        assert_eq!(live.pointer("/providers/provider"), Some(&oauth));
+        state
+            .proxy_service
+            .set_takeover_for_app("pi", false)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+        assert!(!crate::settings::pi_takeover_enabled());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_populated_queue_can_take_over_from_pi_native_login(
+    ) -> Result<(), crate::error::AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(pi_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings)?;
+        std::fs::create_dir_all(&pi_dir).expect("Pi directory");
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {
+                    "anthropic": {
+                        "api": "anthropic-messages",
+                        "baseUrl": "https://api.anthropic.com",
+                        "oauth": "radius",
+                        "models": [{"id": "claude"}]
+                    }
+                }
+            }))
+            .expect("serialize Pi native provider"),
+        )
+        .expect("write Pi native provider");
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "anthropic",
+            "claude",
+        )?;
+
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("managed"),
+                provider_key: "managed".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+        state.db.add_to_failover_queue("pi", "managed")?;
+        let mut proxy_config = state.db.get_global_proxy_config().await?;
+        proxy_config.listen_port = 0;
+        state.db.update_global_proxy_config(proxy_config).await?;
+        state
+            .proxy_service
+            .set_takeover_for_app("pi", true)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+
+        let selected = set_pi_auto_failover_enabled_inner(&state, true)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+
+        assert_eq!(selected.as_deref(), Some("managed"));
+        assert_eq!(
+            PiCatalogCoordinator::current_native_provider(&state)?.as_deref(),
+            Some("managed")
+        );
+        set_pi_auto_failover_enabled_inner(&state, false)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+        state
+            .proxy_service
+            .set_takeover_for_app("pi", false)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn enabling_pi_failover_never_seeds_over_a_persisted_ineligible_primary(
+    ) -> Result<(), crate::error::AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(temp.path().join("pi-agent").to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings)?;
+
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("a-current"),
+                provider_key: "a-current".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+        let mut direct_only = managed_input("z-blocked");
+        direct_only.settings_config["api"] = json!("future-wire-v9");
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: direct_only,
+                provider_key: "z-blocked".to_string(),
+                activate_if_first: false,
+            },
+        )?;
+        // Simulate a queue membership persisted by an older release before
+        // gateway admission became authoritative.
+        state.db.add_to_failover_queue("pi", "z-blocked")?;
+
+        let mut proxy_config = state.db.get_global_proxy_config().await?;
+        proxy_config.listen_port = 0;
+        state.db.update_global_proxy_config(proxy_config).await?;
+        state
+            .proxy_service
+            .set_takeover_for_app("pi", true)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+
+        let error = set_pi_auto_failover_enabled_inner(&state, true)
+            .await
+            .expect_err("a blocked persisted P1 must not be replaced by the current provider");
+
+        assert!(error.contains("primary 'z-blocked' is not gateway-ready"));
+        assert!(state.db.is_in_failover_queue("pi", "z-blocked")?);
+        assert!(!state.db.is_in_failover_queue("pi", "a-current")?);
+        assert!(!crate::settings::get_pi_proxy_settings().auto_failover_enabled);
+
+        state
+            .proxy_service
+            .set_takeover_for_app("pi", false)
+            .await
+            .map_err(crate::error::AppError::Message)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn failover_primary_rollback_restores_the_exact_previous_model(
+    ) -> Result<(), crate::error::AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(temp.path().join("pi-agent").to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings)?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("primary"),
+                provider_key: "primary".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+        let mut previous = managed_input("previous");
+        previous.settings_config["models"] = json!([
+            {"id": "previous-first", "name": "First"},
+            {"id": "previous-second", "name": "Second"}
+        ]);
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: previous,
+                provider_key: "previous".to_string(),
+                activate_if_first: false,
+            },
+        )?;
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "previous".to_string(),
+                model_id: "previous-second".to_string(),
+            },
+        )?;
+        let guard = state.proxy_service.lock_switch_for_app("pi").await;
+        let receipt = set_pi_default_under_switch_guard(&state, &guard, "primary")
+            .expect("switch to failover P1");
+
+        let rollback = rollback_pi_failover_primary(&state, &guard, Some(&receipt), None).await;
+
+        assert_eq!(rollback, None);
+        let defaults = crate::pi_config::native_settings::read_pi_native_defaults()?;
+        assert_eq!(defaults.default_provider.as_deref(), Some("previous"));
+        assert_eq!(defaults.default_model.as_deref(), Some("previous-second"));
+        assert_eq!(
+            PiCatalogCoordinator::current_native_provider(&state)?.as_deref(),
+            Some("previous")
+        );
         Ok(())
     }
 }

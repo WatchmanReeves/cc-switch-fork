@@ -35,6 +35,31 @@ export interface PiNativeDefaults {
   sessionDir?: string;
 }
 
+export type PiCurrentOwnership =
+  | "managed"
+  | "pi_native"
+  | "external"
+  | "unconfigured";
+export type PiActiveRoute = "gateway" | "direct" | "unavailable";
+
+export interface PiCurrentState {
+  providerKey?: string;
+  modelId?: string;
+  managedProviderId?: string;
+  ownership: PiCurrentOwnership;
+  gatewayStatus?: PiGatewayStatus;
+  activeRoute: PiActiveRoute;
+  routeReason:
+    | "unconfigured"
+    | "native_direct"
+    | "managed_gateway"
+    | "managed_direct"
+    | "managed_projection_mismatch"
+    | "failover_primary_mismatch"
+    | "native_catalog_unavailable"
+    | "selection_unavailable";
+}
+
 export type PiSessionDiscovery =
   | {
       status: "available";
@@ -68,6 +93,10 @@ export const piApi = {
 
   async getNativeDefaults(): Promise<PiNativeDefaults> {
     return await invoke("get_pi_native_defaults");
+  },
+
+  async getCurrentState(): Promise<PiCurrentState> {
+    return await invoke("get_pi_current_state");
   },
 
   async getSessionDiscovery(): Promise<PiSessionDiscovery> {

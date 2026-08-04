@@ -116,6 +116,7 @@ export interface FailoverQueueItem {
   providerName: string;
   providerNotes?: string;
   sortIndex?: number;
+  gatewayReady?: boolean;
 }
 
 // 全局代理配置（统一字段，三行镜像）

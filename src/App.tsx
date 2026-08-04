@@ -343,6 +343,16 @@ function App() {
             if (event.appType === activeApp) {
               await refetch();
             }
+            if (event.appType === "pi") {
+              await Promise.all([
+                queryClient.invalidateQueries({
+                  queryKey: ["pi", "currentState"],
+                }),
+                queryClient.invalidateQueries({
+                  queryKey: ["pi", "nativeDefaults"],
+                }),
+              ]);
+            }
           },
         );
         if (!active) {
@@ -360,7 +370,7 @@ function App() {
       active = false;
       unsubscribe?.();
     };
-  }, [activeApp, refetch]);
+  }, [activeApp, queryClient, refetch]);
 
   useTauriEvent("universal-provider-synced", async () => {
     await queryClient.invalidateQueries({ queryKey: ["providers"] });
@@ -975,7 +985,10 @@ function App() {
                     className="space-y-4"
                   >
                     {activeApp === "pi" && (
-                      <PiNativeCatalogPanel providers={providers} />
+                      <PiNativeCatalogPanel
+                        providers={providers}
+                        onCreate={() => setIsAddOpen(true)}
+                      />
                     )}
                     <ProviderList
                       providers={providers}

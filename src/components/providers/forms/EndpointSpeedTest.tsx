@@ -38,9 +38,11 @@ interface EndpointSpeedTestProps {
   onClose: () => void;
   autoSelect: boolean;
   onAutoSelectChange: (checked: boolean) => void;
-  // 新建模式：当自定义端点列表变化时回传（仅包含 isCustom 的条目）
-  // 编辑模式：不使用此回调，端点直接保存到后端
+  // Reports the effective custom endpoint set. In immediate mode entries only
+  // change after the backend mutation succeeds.
   onCustomEndpointsChange?: (urls: string[]) => void;
+  /** Pi edit mode owns endpoint membership as explicit immediate mutations. */
+  persistenceMode?: "batched" | "immediate";
 }
 
 interface EndpointEntry extends EndpointCandidate {
@@ -96,6 +98,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
   autoSelect,
   onAutoSelectChange,
   onCustomEndpointsChange,
+  persistenceMode = "batched",
 }) => {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<EndpointEntry[]>(() =>
@@ -145,28 +148,26 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
         );
         setInitialCustomUrls(customUrls);
 
-        // 合并自定义端点与初始端点
+        // In edit mode the endpoint service owns membership. Keep non-custom
+        // candidates (such as the configured base URL), then rebuild custom
+        // membership from the authoritative backend result.
         setEntries((prev) => {
           const map = new Map<string, EndpointEntry>();
 
-          // 先添加现有端点（来自预设，isCustom 可能为 false）
-          prev.forEach((entry) => {
-            map.set(entry.url, entry);
-          });
+          prev
+            .filter((entry) => !entry.isCustom)
+            .forEach((entry) => {
+              map.set(entry.url, entry);
+            });
 
-          // 合并从后端加载的自定义端点
-          // 关键：如果 URL 已存在（与预设重合），需要将 isCustom 更新为 true
-          // 因为它存在于数据库中，需要在 handleSave 时被正确识别
           candidates.forEach((candidate) => {
             const sanitized = normalizeEndpointUrl(candidate.url);
             if (!sanitized) return;
 
             const existing = map.get(sanitized);
             if (existing) {
-              // URL 已存在，更新 isCustom 为 true（因为它在数据库中）
-              existing.isCustom = true;
+              map.set(sanitized, { ...existing, isCustom: true });
             } else {
-              // URL 不存在，添加新条目
               map.set(sanitized, {
                 id: randomId(),
                 url: sanitized,
@@ -195,12 +196,12 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [appId, providerId, t, initialEndpoints]);
+  }, [appId, providerId, t]);
 
-  // 新建模式：将自定义端点变化透传给父组件（仅限 isCustom）
-  // 编辑模式：不使用此回调，端点已通过 API 直接保存
+  // Keep the parent draft aligned with the effective endpoint membership.
+  // Immediate-mode state changes happen only after persistence succeeds.
   useEffect(() => {
-    if (!onCustomEndpointsChange || isEditMode) return; // 编辑模式不使用回调
+    if (!onCustomEndpointsChange) return;
     try {
       const customUrls = Array.from(
         new Set(
@@ -214,7 +215,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
     } catch (err) {
       // ignore
     }
-  }, [entries, onCustomEndpointsChange, isEditMode]);
+  }, [entries, onCustomEndpointsChange]);
 
   const sortedEntries = useMemo(() => {
     return entries.slice().sort((a: TestResult, b: TestResult) => {
@@ -228,6 +229,8 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
   }, [entries]);
 
   const handleAddEndpoint = useCallback(async () => {
+    if (isSaving) return;
+
     const candidate = customUrl.trim();
     let errorMsg: string | null = null;
 
@@ -268,7 +271,22 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
     setAddError(null);
     setLastError(null);
 
-    // 更新本地状态（延迟保存，点击保存按钮时统一处理）
+    if (persistenceMode === "immediate" && providerId) {
+      setIsSaving(true);
+      try {
+        await vscodeApi.addCustomEndpoint(appId, providerId, sanitized);
+        setInitialCustomUrls((current) => new Set(current).add(sanitized));
+      } catch (error) {
+        setLastError(
+          error instanceof Error ? error.message : t("endpointTest.saveFailed"),
+        );
+        setIsSaving(false);
+        return;
+      } finally {
+        setIsSaving(false);
+      }
+    }
+
     setEntries((prev) => {
       if (prev.some((e) => e.url === sanitized)) return prev;
       return [
@@ -289,14 +307,47 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
     }
 
     setCustomUrl("");
-  }, [customUrl, entries, normalizedSelected, onChange, t]);
+  }, [
+    appId,
+    customUrl,
+    entries,
+    isSaving,
+    normalizedSelected,
+    onChange,
+    persistenceMode,
+    providerId,
+    t,
+  ]);
 
   const handleRemoveEndpoint = useCallback(
-    (entry: EndpointEntry) => {
+    async (entry: EndpointEntry) => {
+      if (isSaving) return;
+
       // 清空之前的错误提示
       setLastError(null);
 
-      // 更新本地状态（延迟保存，点击保存按钮时统一处理）
+      if (persistenceMode === "immediate" && providerId && entry.isCustom) {
+        setIsSaving(true);
+        try {
+          await vscodeApi.removeCustomEndpoint(appId, providerId, entry.url);
+          setInitialCustomUrls((current) => {
+            const next = new Set(current);
+            next.delete(entry.url);
+            return next;
+          });
+        } catch (error) {
+          setLastError(
+            error instanceof Error
+              ? error.message
+              : t("endpointTest.saveFailed"),
+          );
+          setIsSaving(false);
+          return;
+        } finally {
+          setIsSaving(false);
+        }
+      }
+
       setEntries((prev) => {
         const next = prev.filter((item) => item.id !== entry.id);
         if (entry.url === normalizedSelected) {
@@ -306,7 +357,15 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
         return next;
       });
     },
-    [normalizedSelected, onChange],
+    [
+      appId,
+      isSaving,
+      normalizedSelected,
+      onChange,
+      persistenceMode,
+      providerId,
+      t,
+    ],
   );
 
   const runSpeedTest = useCallback(async () => {
@@ -394,7 +453,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
   // 保存端点变更
   const handleSave = useCallback(async () => {
     // 编辑模式：对比初始端点和当前端点，批量保存变更
-    if (isEditMode && providerId) {
+    if (isEditMode && providerId && persistenceMode === "batched") {
       setIsSaving(true);
       setLastError(null);
 
@@ -441,43 +500,57 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
 
     // 关闭弹窗
     onClose();
-  }, [isEditMode, providerId, entries, initialCustomUrls, appId, onClose, t]);
+  }, [
+    isEditMode,
+    providerId,
+    persistenceMode,
+    entries,
+    initialCustomUrls,
+    appId,
+    onClose,
+    t,
+  ]);
 
   if (!visible) return null;
 
-  const footer = (
-    <div className="flex items-center gap-2">
-      <Button
-        type="button"
-        variant="outline"
-        onClick={(event) => {
-          event.preventDefault();
-          onClose();
-        }}
-        disabled={isSaving}
-      >
-        {t("common.cancel")}
+  const footer =
+    persistenceMode === "immediate" && isEditMode ? (
+      <Button type="button" onClick={onClose} disabled={isSaving}>
+        {t("common.done", { defaultValue: "Done" })}
       </Button>
-      <Button
-        type="button"
-        onClick={handleSave}
-        disabled={isSaving}
-        className="gap-2"
-      >
-        {isSaving ? (
-          <>
-            <Loader2 className="w-4 h-4 animate-spin" />
-            {t("common.saving")}
-          </>
-        ) : (
-          <>
-            <Save className="w-4 h-4" />
-            {t("common.save")}
-          </>
-        )}
-      </Button>
-    </div>
-  );
+    ) : (
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={(event) => {
+            event.preventDefault();
+            onClose();
+          }}
+          disabled={isSaving}
+        >
+          {t("common.cancel")}
+        </Button>
+        <Button
+          type="button"
+          onClick={handleSave}
+          disabled={isSaving}
+          className="gap-2"
+        >
+          {isSaving ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {t("common.saving")}
+            </>
+          ) : (
+            <>
+              <Save className="w-4 h-4" />
+              {t("common.save")}
+            </>
+          )}
+        </Button>
+      </div>
+    );
 
   return (
     <FullScreenPanel
@@ -487,6 +560,11 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
       footer={footer}
     >
       <div className="glass rounded-xl p-6 border border-white/10 flex flex-col gap-6">
+        {persistenceMode === "immediate" && isEditMode && (
+          <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+            {t("pi.form.endpointChangesImmediate")}
+          </p>
+        )}
         {/* 测速控制栏 */}
         <div className="flex items-center justify-between">
           <div className="text-sm text-muted-foreground">
@@ -532,6 +610,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
             <Input
               type="text"
               value={customUrl}
+              disabled={isSaving}
               placeholder={t("endpointTest.addEndpointPlaceholder")}
               onChange={(event) => setCustomUrl(event.target.value)}
               onKeyDown={(event) => {
@@ -545,6 +624,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
             <Button
               type="button"
               onClick={handleAddEndpoint}
+              disabled={isSaving}
               variant="outline"
               size="icon"
             >
@@ -626,9 +706,10 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
-                        handleRemoveEndpoint(entry);
+                        void handleRemoveEndpoint(entry);
                       }}
-                      className="opacity-0 transition hover:text-red-600 group-hover:opacity-100 dark:hover:text-red-400"
+                      disabled={isSaving}
+                      className="opacity-0 transition hover:text-red-600 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:text-red-400"
                     >
                       <X className="h-4 w-4" />
                     </button>

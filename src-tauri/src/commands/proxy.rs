@@ -148,14 +148,13 @@ pub async fn update_proxy_config_for_app(
             .lock_switch_for_app(crate::app_config::AppType::Pi.as_str())
             .await;
         let previous = crate::settings::get_pi_proxy_settings();
-        if config.enabled != crate::settings::pi_takeover_enabled() {
-            return Err(
-                "Pi enabled state is owned by set_proxy_takeover_for_app, not proxy config"
-                    .to_string(),
-            );
-        }
+        ensure_pi_proxy_config_owned_fields_unchanged(
+            &config,
+            &previous,
+            crate::settings::pi_takeover_enabled(),
+        )?;
         let next = crate::settings::PiProxySettings {
-            auto_failover_enabled: config.auto_failover_enabled,
+            auto_failover_enabled: previous.auto_failover_enabled,
             max_retries: config.max_retries,
             streaming_first_byte_timeout: config.streaming_first_byte_timeout,
             streaming_idle_timeout: config.streaming_idle_timeout,
@@ -205,6 +204,24 @@ pub async fn update_proxy_config_for_app(
         .proxy_service
         .update_circuit_breaker_config_for_app(&app_type, circuit_config)
         .await
+}
+
+fn ensure_pi_proxy_config_owned_fields_unchanged(
+    config: &AppProxyConfig,
+    previous: &crate::settings::PiProxySettings,
+    takeover_enabled: bool,
+) -> Result<(), String> {
+    if config.enabled != takeover_enabled {
+        return Err(
+            "Pi enabled state is owned by set_proxy_takeover_for_app, not proxy config".to_string(),
+        );
+    }
+    if config.auto_failover_enabled != previous.auto_failover_enabled {
+        return Err(
+            "Pi auto failover is owned by set_auto_failover_enabled, not proxy config".to_string(),
+        );
+    }
+    Ok(())
 }
 
 async fn get_default_cost_multiplier_internal(
@@ -579,6 +596,28 @@ mod tests {
             )
             .map_err(|error| AppError::Database(error.to_string()))?;
         assert_eq!(pi_rows, 0);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn generic_pi_proxy_config_cannot_toggle_owned_control_plane_fields() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let previous = crate::settings::get_pi_proxy_settings();
+        let takeover_enabled = crate::settings::pi_takeover_enabled();
+        let mut config = crate::settings::get_pi_app_proxy_config();
+        config.enabled = takeover_enabled;
+        config.auto_failover_enabled = !previous.auto_failover_enabled;
+
+        let error =
+            ensure_pi_proxy_config_owned_fields_unchanged(&config, &previous, takeover_enabled)
+                .expect_err("generic settings must not bypass coordinated failover selection");
+        assert!(error.contains("set_auto_failover_enabled"));
+
+        config.auto_failover_enabled = previous.auto_failover_enabled;
+        ensure_pi_proxy_config_owned_fields_unchanged(&config, &previous, takeover_enabled)
+            .expect("ordinary Pi proxy tuning remains writable");
         Ok(())
     }
 }

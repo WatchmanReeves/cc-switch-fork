@@ -34,6 +34,11 @@ use std::sync::atomic::AtomicBool;
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
 const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
 
+struct PiDirectProjectionRestore {
+    expected_native: crate::pi_config::document::PiProviderValuesSnapshot,
+    preserved_pi_owned_auth: bool,
+}
+
 /// 代理接管模式下需要从 Claude Live 配置中移除的"模型覆盖"字段。
 ///
 /// 原因：接管模式下 `*_MODEL` 必须由 CC Switch 写成稳定的 Claude 角色别名，
@@ -637,6 +642,21 @@ impl ProxyService {
         )
     }
 
+    pub(crate) fn active_pi_gateway_projection(
+        &self,
+        provider_id: &str,
+        provider_key: &str,
+    ) -> Option<Value> {
+        let listener = self
+            .pi_listener
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        self.pi_runtime
+            .lease(listener.server_generation)?
+            .gateway_projection_for(provider_id, provider_key)
+    }
+
     pub(crate) async fn reconcile_pi_runtime_at_epoch(
         &self,
         catalog_epoch: u64,
@@ -757,7 +777,7 @@ impl ProxyService {
                 )?,
             };
             Some(
-                crate::pi_config::document::apply_pi_provider_patch_with_receipt_and_fingerprints(
+                crate::pi_config::native::apply_managed_pi_provider_patch_with_receipt_and_fingerprints(
                     &models_path,
                     &expected,
                     expected_fingerprints,
@@ -843,6 +863,10 @@ impl ProxyService {
             crate::settings::get_pi_gateway_token()?,
             crate::settings::get_pi_app_proxy_config(),
         )?;
+        crate::pi_config::document::verify_pi_provider_values(
+            &crate::pi_config::native::get_pi_models_path()?,
+            &build.projection_patch,
+        )?;
         self.pi_runtime.publish(build.snapshot).await
     }
 
@@ -878,7 +902,7 @@ impl ProxyService {
                 "Pi listener is unavailable and provider key '{provider_key}' is not already in its direct projection"
             )));
         }
-        crate::pi_config::document::apply_pi_provider_patch_with_receipt(
+        crate::pi_config::native::apply_managed_pi_provider_patch_with_receipt(
             models_path,
             &before,
             &direct,
@@ -904,13 +928,18 @@ impl ProxyService {
                 .retained_gateway_token(listener.server_generation)
                 .ok_or(settings_error)
         })?;
+        // Native projection ownership is independent of failover admission.
+        // In particular, global Stop must be able to restore a legacy
+        // direct-only queue P1 before it clears that stale policy bit.
+        let mut projection_config = crate::settings::get_pi_app_proxy_config();
+        projection_config.auto_failover_enabled = false;
         let gateway = build_pi_runtime(
             self.db.as_ref(),
             listener.server_generation,
             0,
             &listener.gateway_origin,
             gateway_token,
-            crate::settings::get_pi_app_proxy_config(),
+            projection_config,
         )?
         .projection_patch;
         Ok(gateway)
@@ -959,7 +988,7 @@ impl ProxyService {
     ) -> Result<crate::pi_config::document::PiProviderPatchReceipt, AppError> {
         let direct = direct_pi_projection_patch(self.db.as_ref())?;
         let before = self.preflight_pi_owned_projection_at(models_path, expected_gateway)?;
-        crate::pi_config::document::apply_pi_provider_patch_with_receipt(
+        crate::pi_config::native::apply_managed_pi_provider_patch_with_receipt(
             models_path,
             &before,
             &direct,
@@ -971,6 +1000,86 @@ impl ProxyService {
     ) -> Result<crate::pi_config::document::PiProviderPatchReceipt, AppError> {
         let models_path = crate::pi_config::native::get_pi_models_path()?;
         self.restore_pi_direct_projection_at(&models_path)
+    }
+
+    /// Restore only exact keys which CC Switch still owns.
+    ///
+    /// A Pi-native OAuth value is an explicit ownership transfer, not generic
+    /// drift. Shutdown preserves it byte-for-byte while still rejecting every
+    /// other unexpected replacement.
+    fn restore_pi_direct_projection_preserving_native_auth(
+        &self,
+    ) -> Result<PiDirectProjectionRestore, AppError> {
+        let models_path = crate::pi_config::native::get_pi_models_path()?;
+        let direct = direct_pi_projection_patch(self.db.as_ref())?;
+        let before = crate::pi_config::document::snapshot_pi_provider_values(
+            &models_path,
+            direct.keys().cloned(),
+        )?;
+        let listener_available = self
+            .pi_listener
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        let gateway = listener_available
+            .then(|| self.current_pi_gateway_projection())
+            .transpose()?
+            .unwrap_or_default();
+        if listener_available
+            && direct.keys().collect::<std::collections::BTreeSet<_>>()
+                != gateway.keys().collect::<std::collections::BTreeSet<_>>()
+        {
+            return Err(AppError::Conflict(
+                "Pi direct and gateway projections cover different exact-key ownership".to_string(),
+            ));
+        }
+
+        let mut patch = indexmap::IndexMap::new();
+        let mut preserved_pi_owned_auth = false;
+        for (provider_key, direct_value) in &direct {
+            let observed = before
+                .values
+                .get(provider_key)
+                .expect("every managed Pi key was preflighted");
+            if crate::pi_config::native::pi_owns_native_provider_value(
+                provider_key,
+                observed.as_ref(),
+            ) {
+                preserved_pi_owned_auth = true;
+                continue;
+            }
+            let matches_gateway = gateway
+                .get(provider_key)
+                .is_some_and(|gateway_value| gateway_value == observed);
+            if observed != direct_value && !matches_gateway {
+                if !listener_available {
+                    return Err(AppError::Conflict(format!(
+                        "Pi listener is unavailable and provider key '{provider_key}' is not already in its direct projection"
+                    )));
+                }
+                return Err(AppError::Conflict(format!(
+                    "Pi provider key '{provider_key}' changed outside CC Switch"
+                )));
+            }
+            if observed != direct_value {
+                patch.insert(provider_key.clone(), direct_value.clone());
+            }
+        }
+
+        let expected_native = if patch.is_empty() {
+            before
+        } else {
+            crate::pi_config::native::apply_managed_pi_provider_patch_with_receipt(
+                &models_path,
+                &before,
+                &patch,
+            )?
+            .attempted_snapshot()
+        };
+        Ok(PiDirectProjectionRestore {
+            expected_native,
+            preserved_pi_owned_auth,
+        })
     }
 
     /// Replace settings while preserving the ownership boundary when the Pi
@@ -1023,7 +1132,7 @@ impl ProxyService {
         if !existing.pi_takeover_enabled {
             crate::settings::update_settings(next)?;
             let native_receipt =
-                match crate::pi_config::document::apply_pi_provider_patch_with_receipt(
+                match crate::pi_config::native::apply_managed_pi_provider_patch_with_receipt(
                     &new_models_path,
                     &new_native_before,
                     &direct_patch,
@@ -1924,12 +2033,34 @@ impl ProxyService {
             return Ok(());
         }
 
+        self.disable_pi_takeover_locked(false).await
+    }
+
+    /// Restore Pi's direct projection and close its gateway admission.
+    ///
+    /// An ordinary per-app disable requires the user to turn failover off
+    /// first. A global stop is different: it is the single "turn everything
+    /// off" boundary, so it also clears Pi's failover preference while holding
+    /// the same switch lock. The queue itself remains intact.
+    async fn disable_pi_takeover_locked(&self, disable_auto_failover: bool) -> Result<(), String> {
+        let previous_proxy_settings = crate::settings::get_pi_proxy_settings();
+        if previous_proxy_settings.auto_failover_enabled && !disable_auto_failover {
+            return Err(
+                "disable Pi automatic failover before disabling gateway takeover".to_string(),
+            );
+        }
         if !crate::settings::pi_takeover_enabled() {
+            if disable_auto_failover && previous_proxy_settings.auto_failover_enabled {
+                let mut next = previous_proxy_settings;
+                next.auto_failover_enabled = false;
+                crate::settings::update_pi_proxy_settings(next)
+                    .map_err(|error| error.to_string())?;
+            }
             return Ok(());
         }
         let epoch = self.pi_runtime.begin_mutation().await;
-        let direct_receipt = match self.restore_pi_direct_projection() {
-            Ok(receipt) => receipt,
+        let direct_restore = match self.restore_pi_direct_projection_preserving_native_auth() {
+            Ok(restore) => restore,
             Err(error) => {
                 let _ = self
                     .republish_current_pi_runtime_if_native_matches(epoch)
@@ -1939,17 +2070,50 @@ impl ProxyService {
                 ));
             }
         };
+
+        let failover_was_disabled =
+            disable_auto_failover && previous_proxy_settings.auto_failover_enabled;
+        if failover_was_disabled {
+            let mut next = previous_proxy_settings.clone();
+            next.auto_failover_enabled = false;
+            if let Err(error) = crate::settings::update_pi_proxy_settings(next) {
+                let runtime_rollback = if direct_restore.preserved_pi_owned_auth {
+                    self.pi_runtime.close(epoch).await.map(|_| Vec::new())
+                } else {
+                    self.reconcile_pi_runtime_at_epoch_with_native_precondition(
+                        epoch,
+                        Some(&direct_restore.expected_native),
+                    )
+                    .await
+                };
+                return Err(format!(
+                    "failed to disable Pi automatic failover for global stop: {error}; runtime rollback={runtime_rollback:?}"
+                ));
+            }
+        }
+
         if let Err(error) = crate::settings::set_pi_takeover_enabled(false) {
-            // Desired state did not change; rebuild the gateway projection and
-            // restore admission so the native file cannot be left lying.
-            let expected_direct = direct_receipt.attempted_snapshot();
-            let _ = self
-                .reconcile_pi_runtime_at_epoch_with_native_precondition(
+            let failover_rollback = if failover_was_disabled {
+                crate::settings::update_pi_proxy_settings(previous_proxy_settings)
+                    .map_err(|rollback_error| rollback_error.to_string())
+            } else {
+                Ok(())
+            };
+            // Desired state did not change. A Pi-owned OAuth key cannot be
+            // re-admitted by CC Switch, so keep admission fenced; otherwise
+            // rebuild the gateway projection from the exact direct snapshot.
+            let runtime_rollback = if direct_restore.preserved_pi_owned_auth {
+                self.pi_runtime.close(epoch).await.map(|_| Vec::new())
+            } else {
+                self.reconcile_pi_runtime_at_epoch_with_native_precondition(
                     epoch,
-                    Some(&expected_direct),
+                    Some(&direct_restore.expected_native),
                 )
-                .await;
-            return Err(format!("failed to persist Pi takeover disable: {error}"));
+                .await
+            };
+            return Err(format!(
+                "failed to persist Pi takeover disable: {error}; failover rollback={failover_rollback:?}; runtime rollback={runtime_rollback:?}"
+            ));
         }
 
         self.pi_runtime
@@ -2391,9 +2555,11 @@ impl ProxyService {
     ///
     /// 会清除 settings 表中的代理状态，下次启动不会自动恢复。
     pub async fn stop_with_restore(&self) -> Result<(), String> {
-        if crate::settings::pi_takeover_enabled() {
-            self.set_takeover_for_app(AppType::Pi.as_str(), false)
-                .await?;
+        if crate::settings::pi_takeover_enabled()
+            || crate::settings::get_pi_proxy_settings().auto_failover_enabled
+        {
+            let _pi_guard = self.switch_locks.lock_for_app(AppType::Pi.as_str()).await;
+            self.disable_pi_takeover_locked(true).await?;
         }
         // 1. 停止代理服务器（即使未运行也继续执行恢复逻辑）
         if let Err(e) = self.stop_listener_only().await {
@@ -2433,7 +2599,8 @@ impl ProxyService {
             .await
             .map_err(|e| format!("重置健康状态失败: {e}"))?;
 
-        // 注意：不清除故障转移队列和开关状态，保留供下次开启代理时使用
+        // 保留所有故障转移队列。传统应用保留开关偏好；Pi 的开关已在同一
+        // shutdown 边界关闭，避免出现“接管已关、自动故障转移仍启用”的半状态。
         log::info!("代理已停止，Live 配置已恢复");
         Ok(())
     }
@@ -4543,6 +4710,292 @@ mod tests {
                 .expect("parse restored Pi catalog");
         assert_eq!(restored.pointer("/providers/managed-pi"), Some(&config));
         assert_eq!(restored.pointer("/providers/native"), Some(&unowned));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn global_stop_disables_pi_failover_and_restores_the_direct_projection() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let pi_dir = home.dir.path().join("pi");
+        std::fs::create_dir_all(&pi_dir).expect("Pi directory");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(pi_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings).expect("Pi settings");
+
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        use_ephemeral_proxy_port(&db).await;
+        let config = serde_json::json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        let input = ProviderMutationInput {
+            id: "managed-pi".to_string(),
+            name: "Managed Pi".to_string(),
+            settings_config: config.clone(),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: Some(0),
+            notes: None,
+            meta: None,
+            icon: Some("pi".to_string()),
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(AppType::Pi.as_str(), input)
+                .expect("managed aggregate"),
+            "managed-pi",
+        )
+        .expect("managed provider");
+        db.add_to_failover_queue(AppType::Pi.as_str(), "managed-pi")
+            .expect("failover membership");
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "managed-pi",
+            "model-a",
+        )
+        .expect("native default");
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "providers": {"managed-pi": config.clone()}
+            }))
+            .expect("serialize native catalog"),
+        )
+        .expect("native catalog");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .set_takeover_for_app(AppType::Pi.as_str(), true)
+            .await
+            .expect("enable Pi takeover");
+        let mut proxy_settings = crate::settings::get_pi_proxy_settings();
+        proxy_settings.auto_failover_enabled = true;
+        crate::settings::update_pi_proxy_settings(proxy_settings)
+            .expect("enable Pi failover preference");
+        service
+            .reconcile_pi_runtime()
+            .await
+            .expect("publish failover runtime");
+
+        service
+            .stop_with_restore()
+            .await
+            .expect("global stop coordinates Pi shutdown");
+
+        assert!(!crate::settings::pi_takeover_enabled());
+        assert!(!crate::settings::get_pi_proxy_settings().auto_failover_enabled);
+        assert!(!service.is_running().await);
+        assert!(
+            db.is_in_failover_queue(AppType::Pi.as_str(), "managed-pi")
+                .expect("queue membership"),
+            "global stop keeps the reusable queue while disabling its policy"
+        );
+        let restored: Value = serde_json::from_slice(
+            &std::fs::read(pi_dir.join("models.json")).expect("restored models"),
+        )
+        .expect("parse restored models");
+        assert_eq!(restored.pointer("/providers/managed-pi"), Some(&config));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn global_stop_ignores_legacy_direct_only_p1_when_restoring_projection() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let pi_dir = home.dir.path().join("pi");
+        std::fs::create_dir_all(&pi_dir).expect("Pi directory");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(pi_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings).expect("Pi settings");
+
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        use_ephemeral_proxy_port(&db).await;
+        let direct = json!({
+            "name": "Legacy direct-only Pi",
+            "api": "future-wire-v9",
+            "baseUrl": "https://direct.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(
+                AppType::Pi.as_str(),
+                ProviderMutationInput {
+                    id: "legacy-direct".to_string(),
+                    name: "Legacy direct-only Pi".to_string(),
+                    settings_config: direct.clone(),
+                    website_url: None,
+                    category: None,
+                    created_at: None,
+                    sort_index: Some(0),
+                    notes: None,
+                    meta: None,
+                    icon: Some("pi".to_string()),
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            )
+            .expect("managed aggregate"),
+            "legacy-direct",
+        )
+        .expect("managed provider");
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "legacy-direct",
+            "model-a",
+        )
+        .expect("native default");
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"legacy-direct": direct.clone()}
+            }))
+            .expect("serialize native catalog"),
+        )
+        .expect("native catalog");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .set_takeover_for_app(AppType::Pi.as_str(), true)
+            .await
+            .expect("enable Pi takeover");
+        // Reproduce a legacy state without asking the new admission boundary
+        // to create it.
+        db.add_to_failover_queue(AppType::Pi.as_str(), "legacy-direct")
+            .expect("legacy failover membership");
+        let mut proxy_settings = crate::settings::get_pi_proxy_settings();
+        proxy_settings.auto_failover_enabled = true;
+        crate::settings::update_pi_proxy_settings(proxy_settings)
+            .expect("legacy failover preference");
+
+        service
+            .stop_with_restore()
+            .await
+            .expect("global stop must remain a recovery boundary");
+
+        assert!(!crate::settings::pi_takeover_enabled());
+        assert!(!crate::settings::get_pi_proxy_settings().auto_failover_enabled);
+        assert!(!service.is_running().await);
+        assert!(db
+            .is_in_failover_queue(AppType::Pi.as_str(), "legacy-direct")
+            .expect("queue membership"));
+        let restored: Value = serde_json::from_slice(
+            &std::fs::read(pi_dir.join("models.json")).expect("restored models"),
+        )
+        .expect("parse restored models");
+        assert_eq!(restored.pointer("/providers/legacy-direct"), Some(&direct));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn global_stop_preserves_pi_owned_oauth_and_closes_its_stale_gateway_claim() {
+        let home = TempHome::new();
+        crate::settings::reload_settings().expect("reload isolated settings");
+        let pi_dir = home.dir.path().join("pi");
+        std::fs::create_dir_all(&pi_dir).expect("Pi directory");
+        let mut settings = crate::settings::get_settings();
+        settings.pi_config_dir = Some(pi_dir.to_string_lossy().into_owned());
+        settings.pi_takeover_enabled = false;
+        crate::settings::update_settings(settings).expect("Pi settings");
+
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        use_ephemeral_proxy_port(&db).await;
+        let direct = json!({
+            "name": "Managed Pi",
+            "api": "openai-responses",
+            "baseUrl": "https://managed.example/v1",
+            "apiKey": "managed-key",
+            "models": [{"id": "model-a", "name": "Model A"}]
+        });
+        db.create_pi_catalog_provider(
+            NewProviderAggregate::from_input(
+                AppType::Pi.as_str(),
+                ProviderMutationInput {
+                    id: "managed-pi".to_string(),
+                    name: "Managed Pi".to_string(),
+                    settings_config: direct.clone(),
+                    website_url: None,
+                    category: None,
+                    created_at: None,
+                    sort_index: Some(0),
+                    notes: None,
+                    meta: None,
+                    icon: Some("pi".to_string()),
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            )
+            .expect("managed aggregate"),
+            "managed-pi",
+        )
+        .expect("managed provider");
+        db.add_to_failover_queue(AppType::Pi.as_str(), "managed-pi")
+            .expect("failover membership");
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "managed-pi",
+            "model-a",
+        )
+        .expect("native default");
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"managed-pi": direct}
+            }))
+            .expect("serialize native catalog"),
+        )
+        .expect("native catalog");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .set_takeover_for_app(AppType::Pi.as_str(), true)
+            .await
+            .expect("enable Pi takeover");
+        let mut proxy_settings = crate::settings::get_pi_proxy_settings();
+        proxy_settings.auto_failover_enabled = true;
+        crate::settings::update_pi_proxy_settings(proxy_settings)
+            .expect("enable Pi failover preference");
+        service
+            .reconcile_pi_runtime()
+            .await
+            .expect("publish failover runtime");
+
+        let oauth = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "claude"}]
+        });
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"managed-pi": oauth.clone()}
+            }))
+            .expect("serialize Pi OAuth"),
+        )
+        .expect("replace gateway projection");
+
+        service
+            .stop_with_restore()
+            .await
+            .expect("global stop preserves Pi ownership");
+
+        assert!(!crate::settings::pi_takeover_enabled());
+        assert!(!crate::settings::get_pi_proxy_settings().auto_failover_enabled);
+        assert!(!service.is_running().await);
+        assert!(db
+            .is_in_failover_queue(AppType::Pi.as_str(), "managed-pi")
+            .expect("queue membership"));
+        let restored: Value = serde_json::from_slice(
+            &std::fs::read(pi_dir.join("models.json")).expect("preserved models"),
+        )
+        .expect("parse preserved models");
+        assert_eq!(restored.pointer("/providers/managed-pi"), Some(&oauth));
     }
 
     #[tokio::test]

@@ -36,6 +36,7 @@ import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
+  useAvailableProvidersForFailover,
   useAddToFailoverQueue,
   useRemoveFromFailoverQueue,
 } from "@/lib/query/failover";
@@ -149,6 +150,11 @@ export function ProviderList({
   // 故障转移相关
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
   const { data: failoverQueue } = useFailoverQueue(appId);
+  const {
+    data: availableForFailover,
+    isFetching: isFailoverEligibilityFetching,
+    isError: isFailoverEligibilityError,
+  } = useAvailableProvidersForFailover(appId, appId === "pi");
   const addToQueue = useAddToFailoverQueue();
   const removeFromQueue = useRemoveFromFailoverQueue();
 
@@ -176,6 +182,31 @@ export function ProviderList({
       return failoverQueue.some((item) => item.providerId === providerId);
     },
     [isFailoverModeActive, failoverQueue],
+  );
+
+  const isFailoverEligible = useCallback(
+    (providerId: string): boolean => {
+      if (appId !== "pi") return true;
+      if (
+        availableForFailover === undefined ||
+        isFailoverEligibilityFetching ||
+        isFailoverEligibilityError
+      ) {
+        return false;
+      }
+      return (
+        failoverQueue?.some((item) => item.providerId === providerId) ===
+          true ||
+        availableForFailover.some((provider) => provider.id === providerId)
+      );
+    },
+    [
+      appId,
+      availableForFailover,
+      failoverQueue,
+      isFailoverEligibilityError,
+      isFailoverEligibilityFetching,
+    ],
   );
 
   const handleToggleFailover = useCallback(
@@ -427,6 +458,7 @@ export function ProviderList({
                 isAutoFailoverEnabled={isFailoverModeActive}
                 failoverPriority={getFailoverPriority(provider.id)}
                 isInFailoverQueue={isInFailoverQueue(provider.id)}
+                isFailoverEligible={isFailoverEligible(provider.id)}
                 onToggleFailover={(enabled) =>
                   handleToggleFailover(provider.id, enabled)
                 }
@@ -566,6 +598,7 @@ interface SortableProviderCardProps {
   isAutoFailoverEnabled: boolean;
   failoverPriority?: number;
   isInFailoverQueue: boolean;
+  isFailoverEligible: boolean;
   onToggleFailover: (enabled: boolean) => void;
   activeProviderId?: string;
   // OpenClaw: default model
@@ -597,6 +630,7 @@ function SortableProviderCard({
   isAutoFailoverEnabled,
   failoverPriority,
   isInFailoverQueue,
+  isFailoverEligible,
   onToggleFailover,
   activeProviderId,
   isDefaultModel,
@@ -649,6 +683,7 @@ function SortableProviderCard({
         isAutoFailoverEnabled={isAutoFailoverEnabled}
         failoverPriority={failoverPriority}
         isInFailoverQueue={isInFailoverQueue}
+        isFailoverEligible={isFailoverEligible}
         onToggleFailover={onToggleFailover}
         activeProviderId={activeProviderId}
         // OpenClaw: default model

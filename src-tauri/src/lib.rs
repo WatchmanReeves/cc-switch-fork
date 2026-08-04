@@ -1336,6 +1336,7 @@ pub fn run() {
             commands::import_pi_native_provider,
             commands::set_pi_default_model,
             commands::get_pi_native_defaults,
+            commands::get_pi_current_state,
             commands::get_pi_session_discovery,
             commands::reset_pi_gateway_credential,
             commands::get_claude_desktop_status,

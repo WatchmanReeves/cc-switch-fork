@@ -54,8 +54,18 @@ export function FailoverQueueManager({
     isLoading: isQueueLoading,
     error: queueError,
   } = useFailoverQueue(appType);
-  const { data: availableProviders, isLoading: isProvidersLoading } =
-    useAvailableProvidersForFailover(appType);
+  const {
+    data: availableProviders,
+    isLoading: isProvidersLoading,
+    isFetching: isProvidersFetching,
+    isError: isProvidersError,
+  } = useAvailableProvidersForFailover(appType);
+  const isProviderSelectionUnavailable =
+    isProvidersLoading ||
+    (appType === "pi" &&
+      (isProvidersFetching ||
+        isProvidersError ||
+        availableProviders === undefined));
 
   // Mutations
   const addToQueue = useAddToFailoverQueue();
@@ -81,9 +91,13 @@ export function FailoverQueueManager({
         { closeButton: true },
       );
     } catch (error) {
-      toast.error(
-        t("proxy.failoverQueue.addFailed", "添加失败") + ": " + String(error),
-      );
+      // Pi's shared mutation hook owns its structured error notification;
+      // legacy apps still rely on this panel's contextual message.
+      if (appType !== "pi") {
+        toast.error(
+          t("proxy.failoverQueue.addFailed", "添加失败") + ": " + String(error),
+        );
+      }
     }
   };
 
@@ -96,11 +110,13 @@ export function FailoverQueueManager({
         { closeButton: true },
       );
     } catch (error) {
-      toast.error(
-        t("proxy.failoverQueue.removeFailed", "移除失败") +
-          ": " +
-          String(error),
-      );
+      if (appType !== "pi") {
+        toast.error(
+          t("proxy.failoverQueue.removeFailed", "移除失败") +
+            ": " +
+            String(error),
+        );
+      }
     }
   };
 
@@ -155,10 +171,17 @@ export function FailoverQueueManager({
       {/* 说明信息 */}
       <Alert className="border-blue-500/40 bg-blue-500/10">
         <Info className="h-4 w-4" />
-        <AlertDescription className="text-sm">
-          {t(
-            "proxy.failoverQueue.info",
-            "队列顺序与首页供应商列表顺序一致。当请求失败时，系统会按顺序依次尝试队列中的供应商。",
+        <AlertDescription className="space-y-1 text-sm">
+          <p>
+            {t(
+              "proxy.failoverQueue.info",
+              "队列顺序与首页供应商列表顺序一致。当请求失败时，系统会按顺序依次尝试队列中的供应商。",
+            )}
+          </p>
+          {appType === "pi" && (
+            <p className="text-xs text-muted-foreground">
+              {t("pi.failover.compatibilityHint")}
+            </p>
           )}
         </AlertDescription>
       </Alert>
@@ -168,7 +191,7 @@ export function FailoverQueueManager({
         <Select
           value={selectedProviderId}
           onValueChange={setSelectedProviderId}
-          disabled={disabled || isProvidersLoading}
+          disabled={disabled || isProviderSelectionUnavailable}
         >
           <SelectTrigger className="flex-1">
             <SelectValue
@@ -201,7 +224,12 @@ export function FailoverQueueManager({
         </Select>
         <Button
           onClick={handleAddProvider}
-          disabled={disabled || !selectedProviderId || addToQueue.isPending}
+          disabled={
+            disabled ||
+            isProviderSelectionUnavailable ||
+            !selectedProviderId ||
+            addToQueue.isPending
+          }
           size="icon"
           variant="outline"
         >
@@ -281,14 +309,24 @@ function QueueItem({
 
       {/* 供应商名称 */}
       <div className="flex-1 min-w-0">
-        <span className="text-sm font-medium truncate block">
-          {item.providerName}
-          {item.providerNotes && (
-            <span className="ml-1 text-xs text-muted-foreground">
-              ({item.providerNotes})
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium truncate">
+            {item.providerName}
+            {item.providerNotes && (
+              <span className="ml-1 text-xs text-muted-foreground">
+                ({item.providerNotes})
+              </span>
+            )}
+          </span>
+          {item.gatewayReady === false && (
+            <span
+              className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700 dark:text-amber-300"
+              title={t("pi.failover.unavailableHint")}
+            >
+              {t("pi.failover.unavailable")}
             </span>
           )}
-        </span>
+        </div>
       </div>
 
       {/* 删除按钮 */}

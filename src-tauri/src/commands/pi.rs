@@ -1,6 +1,6 @@
 use crate::pi_config::model::PiNativeDiagnostic;
 use crate::pi_config::native_settings::{read_pi_native_defaults, PiNativeDefaults};
-use crate::services::pi_catalog::{PiCatalogCoordinator, PiCatalogMutation};
+use crate::services::pi_catalog::{PiCatalogCoordinator, PiCatalogMutation, PiCurrentState};
 use crate::session_manager::providers::pi::PiSessionDiscovery;
 use crate::store::AppState;
 use tauri::State;
@@ -53,6 +53,18 @@ pub(crate) fn set_pi_default_model(
 #[tauri::command]
 pub(crate) fn get_pi_native_defaults() -> Result<PiNativeDefaults, String> {
     read_pi_native_defaults().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn get_pi_current_state(
+    state: State<'_, AppState>,
+) -> Result<PiCurrentState, String> {
+    let guard = state
+        .proxy_service
+        .lock_switch_for_app(crate::app_config::AppType::Pi.as_str())
+        .await;
+    PiCatalogCoordinator::current_state_under_switch_guard(state.inner(), &guard)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

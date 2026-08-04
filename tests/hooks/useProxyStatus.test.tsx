@@ -132,6 +132,70 @@ describe("useProxyStatus", () => {
     expect(invokeMock).toHaveBeenCalledWith("stop_proxy_server");
   });
 
+  it("refreshes the Pi policy state cleared by a global stop", async () => {
+    const { wrapper, queryClient } = createWrapper();
+    queryClient.setQueryData(["autoFailoverEnabled", "pi"], true);
+    queryClient.setQueryData(["pi", "currentState"], {
+      activeRoute: "gateway",
+    });
+    queryClient.setQueryData(["pi", "nativeDefaults"], {
+      defaultProvider: "managed",
+    });
+    queryClient.setQueryData(proxyKeys.appConfig("pi"), {
+      autoFailoverEnabled: true,
+    });
+    const { result } = renderHook(() => useProxyStatus(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBeDefined());
+
+    await act(async () => {
+      await result.current.stopWithRestore();
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("stop_proxy_with_restore");
+    for (const key of [
+      ["autoFailoverEnabled", "pi"],
+      proxyKeys.appConfig("pi"),
+      ["pi", "currentState"],
+      ["pi", "nativeDefaults"],
+    ]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+  });
+
+  it("refreshes Pi authority when global stop reports a partial failure", async () => {
+    const { wrapper, queryClient } = createWrapper();
+    queryClient.setQueryData(["autoFailoverEnabled", "pi"], true);
+    queryClient.setQueryData(["pi", "currentState"], {
+      activeRoute: "gateway",
+    });
+    queryClient.setQueryData(proxyKeys.appConfig("pi"), {
+      autoFailoverEnabled: true,
+    });
+    const { result } = renderHook(() => useProxyStatus(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBeDefined());
+    invokeMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("restore failed after Pi shutdown")),
+    );
+
+    await expect(
+      act(async () => {
+        await result.current.stopWithRestore();
+      }),
+    ).rejects.toThrow("restore failed after Pi shutdown");
+
+    await waitFor(() => {
+      expect(
+        queryClient.getQueryState(["autoFailoverEnabled", "pi"])?.isInvalidated,
+      ).toBe(true);
+      expect(
+        queryClient.getQueryState(["pi", "currentState"])?.isInvalidated,
+      ).toBe(true);
+      expect(
+        queryClient.getQueryState(proxyKeys.appConfig("pi"))?.isInvalidated,
+      ).toBe(true);
+    });
+  });
+
   it("refreshes desired takeover state even when activation rejects", async () => {
     let desiredPi = false;
     invokeMock.mockImplementation((command: string) => {
@@ -173,6 +237,9 @@ describe("useProxyStatus", () => {
     });
 
     const { wrapper, queryClient } = createWrapper();
+    queryClient.setQueryData(["pi", "currentState"], {
+      activeRoute: "direct",
+    });
     const { result, rerender } = renderHook(() => useProxyStatus(), {
       wrapper,
     });
@@ -198,6 +265,9 @@ describe("useProxyStatus", () => {
       pi: true,
       piOperationalState: "degraded",
     });
+    expect(
+      queryClient.getQueryState(["pi", "currentState"])?.isInvalidated,
+    ).toBe(true);
     rerender();
     await waitFor(() => expect(result.current.takeoverStatus?.pi).toBe(true));
   });

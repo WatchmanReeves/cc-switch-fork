@@ -1,27 +1,35 @@
-//! Public, side-effect-free inspection service for Pi's native catalog.
+//! Pi native catalog inspection and managed publication ownership boundary.
 //!
-//! This module orchestrates independent raw, managed, composer and gateway
-//! assessments. No assessment is allowed to gate execution of a sibling layer.
+//! Public inspection methods are side-effect-free and orchestrate independent
+//! raw, managed, composer and gateway assessments. Managed publication helpers
+//! enforce Pi-owned authentication before delegating to the document writer.
+//! No assessment is allowed to gate execution of a sibling layer.
 
 #![allow(dead_code)]
 
 use super::composer::{
     compose_explicit_custom_catalog, PiComposerReasonCode, PiComposerStatus, PiNativeComposition,
 };
-use super::document::{pi_raw_provider_fingerprint, read_pi_models_document, PiRawProviderEntry};
+use super::document::{
+    apply_pi_provider_patch_with_receipt, apply_pi_provider_patch_with_receipt_and_fingerprints,
+    pi_raw_provider_fingerprint, read_pi_models_document, PiProviderPatchReceipt,
+    PiProviderValuesSnapshot, PiRawProviderEntry,
+};
 use super::gateway::{
     assess_composition, PiGatewayAssessment, PiGatewayCapability, PiGatewayReasonCode,
 };
 use super::model::{
-    validate_pi_managed_provider, PiCompositionStatus, PiConfigError, PiDiagnosticLayer,
-    PiDiagnosticReason, PiGatewayStatus, PiManagedAssessment, PiManagedProviderConfig,
-    PiManagementStatus, PiNativeDiagnostic, PiNativeEntryKind, PiRawNativeValidity, PiReasonCode,
+    validate_pi_managed_provider, value_uses_pi_owned_auth, PiCompositionStatus, PiConfigError,
+    PiDiagnosticLayer, PiDiagnosticReason, PiGatewayStatus, PiManagedAssessment,
+    PiManagedProviderConfig, PiManagementStatus, PiNativeDiagnostic, PiNativeEntryKind,
+    PiRawNativeValidity, PiReasonCode,
 };
 use super::raw_schema::{
     evaluate_provider_value, PiRawReasonCode, PiRawSchemaEvaluation, PiRawValidity,
 };
 use crate::config::get_home_dir;
 use crate::error::AppError;
+use indexmap::IndexMap;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -70,6 +78,90 @@ const PI_BUILTIN_PROVIDER_KEYS: &[&str] = &[
     "zai-coding-cn",
 ];
 
+pub(crate) fn is_pi_builtin_provider_key(provider_key: &str) -> bool {
+    PI_BUILTIN_PROVIDER_KEYS.contains(&provider_key)
+}
+
+/// Whether Pi, rather than CC Switch, owns an observed native provider value.
+///
+/// This is the shared read/write admission predicate. Read-only capability
+/// views and the managed document writer must not disagree about whether an
+/// exact key can participate in the gateway.
+pub(crate) fn pi_owns_native_provider_value(provider_key: &str, observed: Option<&Value>) -> bool {
+    is_pi_builtin_provider_key(provider_key) || observed.is_some_and(value_uses_pi_owned_auth)
+}
+
+pub(crate) fn is_pi_owned_native_entry(inspection: &PiNativeEntryInspection) -> bool {
+    is_pi_builtin_provider_key(&inspection.diagnostic.provider_key) || inspection.pi_owned_auth
+}
+
+pub(crate) fn native_entry_contains_model(
+    inspection: &PiNativeEntryInspection,
+    model_id: &str,
+) -> bool {
+    inspection.composition.status == PiComposerStatus::Composed
+        && inspection
+            .composition
+            .models
+            .iter()
+            .any(|model| model.id == model_id)
+}
+
+/// Publish a CC Switch-managed exact-key patch without crossing Pi's native
+/// authentication boundary.
+///
+/// The ownership check is evaluated against the same snapshot used by the
+/// document CAS. A concurrent Pi write therefore either appears in this
+/// snapshot and is rejected here, or invalidates the CAS precondition.
+pub(crate) fn apply_managed_pi_provider_patch_with_receipt(
+    path: &Path,
+    before: &PiProviderValuesSnapshot,
+    patch: &IndexMap<String, Option<Value>>,
+) -> Result<PiProviderPatchReceipt, AppError> {
+    ensure_managed_pi_provider_patch_targets(before, patch)?;
+    apply_pi_provider_patch_with_receipt(path, before, patch)
+}
+
+pub(crate) fn apply_managed_pi_provider_patch_with_receipt_and_fingerprints(
+    path: &Path,
+    before: &PiProviderValuesSnapshot,
+    expected_fingerprints: Option<&IndexMap<String, String>>,
+    patch: &IndexMap<String, Option<Value>>,
+) -> Result<PiProviderPatchReceipt, AppError> {
+    ensure_managed_pi_provider_patch_targets(before, patch)?;
+    apply_pi_provider_patch_with_receipt_and_fingerprints(
+        path,
+        before,
+        expected_fingerprints,
+        patch,
+    )
+}
+
+fn ensure_managed_pi_provider_patch_targets(
+    before: &PiProviderValuesSnapshot,
+    patch: &IndexMap<String, Option<Value>>,
+) -> Result<(), AppError> {
+    for (provider_key, replacement) in patch {
+        let observed = before.values.get(provider_key).and_then(Option::as_ref);
+        if pi_owns_native_provider_value(provider_key, observed) {
+            if !is_pi_builtin_provider_key(provider_key) {
+                return Err(AppError::Conflict(format!(
+                    "Pi native provider key '{provider_key}' uses Pi-owned authentication"
+                )));
+            }
+            return Err(AppError::Conflict(format!(
+                "Pi built-in provider key '{provider_key}' is owned by Pi"
+            )));
+        }
+        if replacement.as_ref().is_some_and(value_uses_pi_owned_auth) {
+            return Err(AppError::Conflict(format!(
+                "managed Pi provider key '{provider_key}' cannot publish Pi-owned authentication"
+            )));
+        }
+    }
+    Ok(())
+}
+
 const RECOGNIZED_PROVIDER_FIELDS: &[&str] = &[
     "name",
     "baseUrl",
@@ -88,6 +180,7 @@ pub(crate) struct PiNativeEntryInspection {
     pub diagnostic: PiNativeDiagnostic,
     pub managed_config: Option<PiManagedProviderConfig>,
     pub composition: PiNativeComposition,
+    pub pi_owned_auth: bool,
 }
 
 #[derive(Debug)]
@@ -263,20 +356,25 @@ fn analyze_native_entry(
         }
     };
 
-    let management_status = managed_claims
-        .get(provider_key)
-        .map(|provider_id| PiManagementStatus::Managed {
-            provider_id: provider_id.clone(),
-        })
-        .unwrap_or_else(|| {
-            if raw.validity == PiRawValidity::Valid
-                && managed.assessment == PiManagedAssessment::Manageable
-            {
-                PiManagementStatus::Importable
-            } else {
-                PiManagementStatus::Unsupported
-            }
-        });
+    let pi_owned_auth = value_uses_pi_owned_auth(&entry.value);
+    let management_status = if pi_owned_auth {
+        PiManagementStatus::Unsupported
+    } else {
+        managed_claims
+            .get(provider_key)
+            .map(|provider_id| PiManagementStatus::Managed {
+                provider_id: provider_id.clone(),
+            })
+            .unwrap_or_else(|| {
+                if raw.validity == PiRawValidity::Valid
+                    && managed.assessment == PiManagedAssessment::Manageable
+                {
+                    PiManagementStatus::Importable
+                } else {
+                    PiManagementStatus::Unsupported
+                }
+            })
+    };
 
     let mut reasons = map_raw_reasons(&raw);
     extend_reasons(&mut reasons, managed.reasons.clone());
@@ -302,6 +400,7 @@ fn analyze_native_entry(
         },
         managed_config: managed.config,
         composition,
+        pi_owned_auth,
     }
 }
 
@@ -538,6 +637,7 @@ fn managed_validation_reason(error: PiConfigError) -> PiDiagnosticReason {
         PiConfigError::InvalidThinkingLevelValue { .. } => {
             (PiReasonCode::InvalidThinkingLevel, "/models")
         }
+        PiConfigError::PiOwnedAuthField { .. } => (PiReasonCode::PiOwnedAuthField, "/oauth"),
     };
     diagnostic_reason(PiDiagnosticLayer::Managed, code, pointer)
 }
@@ -547,7 +647,7 @@ fn classify_kind(
     value: &Value,
     raw_validity: PiRawValidity,
 ) -> PiNativeEntryKind {
-    if PI_BUILTIN_PROVIDER_KEYS.contains(&provider_key) {
+    if is_pi_builtin_provider_key(provider_key) {
         return PiNativeEntryKind::BuiltInOverlay;
     }
     if raw_validity != PiRawValidity::Valid {
@@ -847,6 +947,116 @@ mod tests {
             PiReasonCode::UnrepresentableCompat,
             "/modelOverrides/m/compat"
         ));
+    }
+
+    #[test]
+    fn pi_owned_oauth_catalog_is_visible_but_not_importable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("models.json");
+        fs::write(
+            &path,
+            r#"{"providers":{"subscription":{
+  "api":"anthropic-messages",
+  "baseUrl":"https://api.anthropic.com",
+  "oauth":"radius",
+  "models":[{"id":"claude"}]
+}}}"#,
+        )
+        .expect("write");
+
+        let claims = BTreeMap::from([(
+            "subscription".to_string(),
+            "stale-managed-claim".to_string(),
+        )]);
+        let diagnostic = &PiNativeInspectionService::inspect_catalog(&path, &claims).unwrap()[0];
+        assert_eq!(diagnostic.raw_validity, PiRawNativeValidity::Valid);
+        assert_eq!(
+            diagnostic.managed_assessment,
+            PiManagedAssessment::Unsupported
+        );
+        assert_eq!(
+            diagnostic.management_status,
+            PiManagementStatus::Unsupported
+        );
+        assert!(has_reason(
+            diagnostic,
+            PiDiagnosticLayer::Managed,
+            PiReasonCode::PiOwnedAuthField,
+            "/oauth"
+        ));
+    }
+
+    #[test]
+    fn managed_patch_cannot_replace_a_pi_owned_oauth_entry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("models.json");
+        let oauth = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "claude"}]
+        });
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"subscription": oauth}
+            }))
+            .expect("serialize"),
+        )
+        .expect("write");
+        let before =
+            super::super::document::snapshot_pi_provider_values(&path, ["subscription".into()])
+                .expect("snapshot");
+        let patch = IndexMap::from([(
+            "subscription".to_string(),
+            Some(json!({
+                "api": "anthropic-messages",
+                "baseUrl": "https://managed.example",
+                "apiKey": "managed",
+                "models": [{"id": "claude"}]
+            })),
+        )]);
+
+        let error = apply_managed_pi_provider_patch_with_receipt(&path, &before, &patch)
+            .expect_err("Pi-owned authentication must win");
+
+        assert!(matches!(error, AppError::Conflict(_)));
+        assert_eq!(
+            super::super::document::snapshot_pi_provider_values(&path, ["subscription".into()])
+                .expect("read")
+                .values
+                .get("subscription")
+                .cloned()
+                .flatten(),
+            Some(oauth)
+        );
+    }
+
+    #[test]
+    fn managed_patch_cannot_publish_pi_owned_oauth_into_an_empty_document() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("models.json");
+        let before =
+            super::super::document::snapshot_pi_provider_values(&path, ["subscription".into()])
+                .expect("snapshot");
+        let patch = IndexMap::from([(
+            "subscription".to_string(),
+            Some(json!({
+                "api": "anthropic-messages",
+                "baseUrl": "https://api.anthropic.com",
+                "oauth": "radius",
+                "models": [{"id": "claude"}]
+            })),
+        )]);
+
+        let error = apply_managed_pi_provider_patch_with_receipt(&path, &before, &patch)
+            .expect_err("managed writes must not publish Pi-owned authentication");
+
+        assert!(matches!(error, AppError::Conflict(_)));
+        assert!(
+            !path.exists(),
+            "the ownership check must run before document publication"
+        );
     }
 
     #[test]

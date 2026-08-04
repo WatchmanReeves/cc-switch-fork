@@ -16,6 +16,10 @@ pub struct FailoverQueueItem {
     pub sort_index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_notes: Option<String>,
+    /// Pi derives live gateway admission from both the stored composition and
+    /// the exact native provider value. Other apps leave this field absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_ready: Option<bool>,
 }
 
 impl Database {
@@ -39,6 +43,7 @@ impl Database {
                     provider_name: row.get(1)?,
                     sort_index: row.get(2)?,
                     provider_notes: row.get(3)?,
+                    gateway_ready: None,
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?
@@ -79,21 +84,26 @@ impl Database {
         app_type: &str,
         provider_id: &str,
     ) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|error| AppError::Database(error.to_string()))?;
 
         // 1. 从队列中移除
-        conn.execute(
+        tx.execute(
             "UPDATE providers SET in_failover_queue = 0 WHERE id = ?1 AND app_type = ?2",
             rusqlite::params![provider_id, app_type],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // 2. 清除该供应商的健康状态（退出队列后不再需要健康监控）
-        conn.execute(
+        tx.execute(
             "DELETE FROM provider_health WHERE provider_id = ?1 AND app_type = ?2",
             rusqlite::params![provider_id, app_type],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit()
+            .map_err(|error| AppError::Database(error.to_string()))?;
 
         log::info!("已从故障转移队列移除供应商 {provider_id} ({app_type}), 并清除其健康状态");
 

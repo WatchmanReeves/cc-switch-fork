@@ -35,6 +35,7 @@ interface ProviderActionsProps {
   onOpenTerminal?: () => void;
   isAutoFailoverEnabled?: boolean;
   isInFailoverQueue?: boolean;
+  isFailoverEligible?: boolean;
   onToggleFailover?: (enabled: boolean) => void;
   isOfficialBlockedByProxy?: boolean;
   // Hermes v12+ providers: dict overlay — edit/delete must go through Web UI
@@ -74,6 +75,7 @@ export function ProviderActions({
   onOpenTerminal,
   isAutoFailoverEnabled = false,
   isInFailoverQueue = false,
+  isFailoverEligible = true,
   onToggleFailover,
   isOfficialBlockedByProxy = false,
   isReadOnly = false,
@@ -173,6 +175,16 @@ export function ProviderActions({
             "bg-blue-100 text-blue-600 hover:bg-blue-200 dark:bg-blue-900/50 dark:text-blue-400 dark:hover:bg-blue-900/70",
           icon: <Check className="h-4 w-4" />,
           text: t("failover.inQueue", { defaultValue: "已加入" }),
+        };
+      }
+      if (!isFailoverEligible) {
+        return {
+          disabled: true,
+          variant: "secondary" as const,
+          className: "opacity-60",
+          icon: <Minus className="h-4 w-4" />,
+          text: t("pi.failover.unavailable"),
+          title: t("pi.failover.unavailableHint"),
         };
       }
       return {

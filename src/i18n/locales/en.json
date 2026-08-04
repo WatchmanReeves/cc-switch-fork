@@ -905,6 +905,7 @@
       "providerBaseUrl": "Provider base URL",
       "manageEndpoints": "Manage failover endpoints",
       "credential": "Credential",
+      "credentialRequired": "Enter the API key for this preset",
       "credentialHint": "Pi accepts a literal, $ENV reference, or !command expression. Deferred values are validated only after Pi resolves them.",
       "website": "Website",
       "authHeader": "Send credential as Authorization",
@@ -933,7 +934,57 @@
       "modelRequired": "Add at least one model",
       "modelAdditionalConfig": "Additional model configuration {{id}} (JSON)",
       "additionalConfig": "Additional provider configuration (JSON)",
-      "additionalConfigHint": "Unknown Pi fields are preserved. Controlled fields shown above take precedence."
+      "additionalConfigHint": "Unknown Pi fields are preserved. Controlled fields shown above take precedence.",
+      "stepPreset": "1. Choose a provider",
+      "presetHint": "Start with a maintained preset or choose Custom. Gateway availability is determined from the completed configuration.",
+      "stepAuth": "2. Add a credential",
+      "managedCredentialHint": "This creates a CC Switch managed API-key provider. Pi subscription login remains owned by Pi.",
+      "nativeLoginAlternative": "Using a Pi subscription? Do not create a managed provider here. Use Pi native login from the provider page instead.",
+      "stepModel": "3. Choose models",
+      "advanced": "Advanced settings",
+      "endpointChangesImmediate": "Endpoint membership is independent from this form. Additions and removals are applied immediately."
+    },
+    "current": {
+      "title": "Currently used by Pi",
+      "description": "This card reads Pi's active selection and actual route as one backend snapshot.",
+      "addManaged": "Add API key provider",
+      "nativeLogin": "Use Pi native login",
+      "nativeLoginTitle": "Sign in with Pi",
+      "nativeLoginStep1": "Start Pi in a terminal.",
+      "nativeLoginStep2": "Run /login and complete Pi's own sign-in flow.",
+      "nativeLoginStep3": "Run /model to choose the provider and model, then refresh this page.",
+      "nativeDirectNote": "Credentials remain in Pi and are not copied by CC Switch. This route stays direct and is not added to CC Switch failover.",
+      "changeManagedDefault": "Change managed default",
+      "failoverOwnsDefault": "Automatic failover is enabled. Its queue primary controls the managed default; disable failover before changing it here.",
+      "failoverDirectOverride": "Pi is not using the managed gateway route, so automatic failover is not active for this selection.",
+      "detected": "Detected in Pi ({{count}})",
+      "diagnosticsHint": "Compatibility below is an inspection result, not the active route shown above.",
+      "ownership": {
+        "managed": "Managed by CC Switch",
+        "pi_native": "Pi native configuration",
+        "external": "External Pi config",
+        "unconfigured": "Not configured"
+      },
+      "route": {
+        "gateway": "Gateway",
+        "direct": "Direct",
+        "unavailable": "Needs attention"
+      },
+      "reason": {
+        "unconfigured": "Choose a provider and model in Pi.",
+        "native_direct": "Pi is using this provider directly.",
+        "managed_gateway": "The managed gateway projection is active.",
+        "managed_direct": "This managed provider is active in direct mode.",
+        "managed_projection_mismatch": "Pi's live provider value no longer matches the managed direct or gateway projection. Refresh or switch it again.",
+        "failover_primary_mismatch": "Pi selected a managed provider other than failover queue P1. Disable automatic failover or switch back to P1.",
+        "native_catalog_unavailable": "Pi owns this built-in model catalog, so CC Switch cannot verify the selected model.",
+        "selection_unavailable": "Pi's selected provider or model is no longer available. Choose it again in Pi."
+      }
+    },
+    "failover": {
+      "unavailable": "Not gateway-ready",
+      "unavailableHint": "This provider is direct-only or its gateway capability is unknown, so it cannot join failover.",
+      "compatibilityHint": "Pi retries later providers only when they expose the same model ID with a compatible API and request profile. Queue membership does not imply that every provider can serve every model."
     },
     "native": {
       "title": "Pi native model catalog",

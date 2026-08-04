@@ -7,19 +7,24 @@
 
 use crate::app_config::AppType;
 use crate::database::{
-    NewEndpoint, NewProviderAggregate, PiProviderProjection, ProviderKey, ProviderRowUpdate,
+    FailoverQueueItem, NewEndpoint, NewProviderAggregate, PiProviderProjection, ProviderKey,
+    ProviderRowUpdate,
 };
 use crate::error::AppError;
 use crate::pi_config::document::{
-    apply_pi_provider_patch_with_receipt, snapshot_pi_provider_values, PiProviderPatchReceipt,
-    PiProviderValuesSnapshot,
+    snapshot_pi_provider_values, PiProviderPatchReceipt, PiProviderValuesSnapshot,
 };
-use crate::pi_config::gateway::parse_pi_gateway_endpoint;
+use crate::pi_config::gateway::{
+    assess_composition_for_runtime, parse_pi_gateway_endpoint, PiGatewayCapability,
+};
 use crate::pi_config::model::{
-    effective_pi_model, validate_pi_managed_provider, PiManagedProviderConfig, PiManagementStatus,
+    effective_pi_model, validate_pi_managed_provider, value_uses_pi_owned_auth, PiGatewayStatus,
+    PiManagedProviderConfig, PiManagementStatus,
 };
 use crate::pi_config::native::{
-    get_pi_models_path, inspect_pi_native_entry, PiNativeInspectionService,
+    apply_managed_pi_provider_patch_with_receipt, compose_managed_pi_provider, get_pi_models_path,
+    inspect_pi_native_entry, is_pi_builtin_provider_key, is_pi_owned_native_entry,
+    native_entry_contains_model, pi_owns_native_provider_value, PiNativeInspectionService,
 };
 use crate::pi_config::native_settings::{
     read_pi_native_defaults, set_pi_native_default_with_receipt, PiNativeDefaults,
@@ -84,6 +89,10 @@ pub(crate) enum PiCatalogMutation {
         provider_id: String,
         model_id: String,
     },
+    SetFailoverMembership {
+        provider_id: String,
+        in_failover_queue: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -98,6 +107,52 @@ pub(crate) struct PiCatalogMutationResult {
     native_patch_receipt: Option<PiProviderPatchReceipt>,
     #[serde(skip)]
     native_fingerprint_preconditions: IndexMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PiCurrentOwnership {
+    Managed,
+    PiNative,
+    External,
+    Unconfigured,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PiActiveRoute {
+    Gateway,
+    Direct,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PiCurrentRouteReason {
+    Unconfigured,
+    NativeDirect,
+    ManagedGateway,
+    ManagedDirect,
+    ManagedProjectionMismatch,
+    FailoverPrimaryMismatch,
+    NativeCatalogUnavailable,
+    SelectionUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PiCurrentState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_provider_id: Option<String>,
+    pub ownership: PiCurrentOwnership,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_status: Option<PiGatewayStatus>,
+    pub active_route: PiActiveRoute,
+    pub route_reason: PiCurrentRouteReason,
 }
 
 pub(crate) struct PiCatalogCoordinator;
@@ -130,6 +185,7 @@ impl PiCatalogCoordinator {
                 )));
             }
         }
+        Self::ensure_auto_failover_reorder_preserves_primary(state, &updates)?;
         let projections = state
             .db
             .get_pi_projection_manifest()?
@@ -178,6 +234,13 @@ impl PiCatalogCoordinator {
         switch_guard: &tokio::sync::OwnedMutexGuard<()>,
         mutation: PiCatalogMutation,
     ) -> Result<PiCatalogMutationResult, AppError> {
+        let may_fence_for_native_auth = matches!(
+            &mutation,
+            PiCatalogMutation::SetFailoverMembership {
+                in_failover_queue: false,
+                ..
+            }
+        );
         let additional_native_key = match &mutation {
             PiCatalogMutation::CreateProvider { provider_key, .. }
             | PiCatalogMutation::ImportNative { provider_key, .. } => Some(provider_key.clone()),
@@ -187,6 +250,7 @@ impl PiCatalogCoordinator {
             state,
             switch_guard,
             additional_native_key.as_deref(),
+            may_fence_for_native_auth,
             || match mutation {
                 PiCatalogMutation::CreateProvider {
                     input,
@@ -211,8 +275,28 @@ impl PiCatalogCoordinator {
                     provider_id,
                     model_id,
                 } => Self::set_default(state, &provider_id, &model_id),
+                PiCatalogMutation::SetFailoverMembership {
+                    provider_id,
+                    in_failover_queue,
+                } => Self::set_failover_membership(state, &provider_id, in_failover_queue),
             },
         )
+    }
+
+    pub(crate) fn rollback_native_defaults_under_switch_guard(
+        state: &AppState,
+        _switch_guard: &tokio::sync::OwnedMutexGuard<()>,
+        receipt: &PiNativeDefaultsReceipt,
+    ) -> Result<(), AppError> {
+        let outcome = receipt.rollback()?;
+        Self::reconcile_current_indexes_from_native(state)?;
+        match outcome {
+            PiNativeDefaultsRollback::Restored => Ok(()),
+            PiNativeDefaultsRollback::Superseded => Err(authority_error(
+                PiCatalogAuthority::ProjectionPending,
+                "Pi changed its native default while automatic failover was being updated; the newer Pi selection was preserved",
+            )),
+        }
     }
 
     /// Reconcile portable provider rows with this device's exact-key ledger.
@@ -257,6 +341,7 @@ impl PiCatalogCoordinator {
             state,
             &switch_guard,
             additional_native_key,
+            false,
             operation,
         )
     }
@@ -265,6 +350,7 @@ impl PiCatalogCoordinator {
         state: &AppState,
         _switch_guard: &tokio::sync::OwnedMutexGuard<()>,
         additional_native_key: Option<&str>,
+        may_fence_for_native_auth: bool,
         operation: impl FnOnce() -> Result<PiCatalogMutationResult, AppError>,
     ) -> Result<PiCatalogMutationResult, AppError> {
         Self::reconcile_current_indexes_from_native(state)?;
@@ -295,16 +381,38 @@ impl PiCatalogCoordinator {
                     .insert(provider_key.clone(), attempted.clone());
             }
         }
-        let reconcile = futures::executor::block_on(
-            state
-                .proxy_service
-                .reconcile_pi_runtime_at_epoch_with_native_claim_precondition(
-                    catalog_epoch,
-                    Some(&expected_native),
-                    (!native_fingerprint_preconditions.is_empty())
-                        .then_some(&native_fingerprint_preconditions),
-                ),
-        );
+        let mut ownership_check_error = None;
+        if may_fence_for_native_auth && result.is_ok() {
+            match snapshot_contains_pi_owned_claim(state, &expected_native) {
+                Ok(true)
+                    if futures::executor::block_on(
+                        state.proxy_service.close_pi_runtime_at_epoch(catalog_epoch),
+                    )
+                    .is_ok() =>
+                {
+                    // Removing stale queue ownership is a recovery operation.
+                    // Pi's native OAuth value remains untouched and local
+                    // admission stays closed until the user switches back to
+                    // a managed provider.
+                    return result;
+                }
+                Ok(_) => {}
+                Err(error) => ownership_check_error = Some(error),
+            }
+        }
+        let reconcile = match ownership_check_error {
+            Some(error) => Err(error),
+            None => futures::executor::block_on(
+                state
+                    .proxy_service
+                    .reconcile_pi_runtime_at_epoch_with_native_claim_precondition(
+                        catalog_epoch,
+                        Some(&expected_native),
+                        (!native_fingerprint_preconditions.is_empty())
+                            .then_some(&native_fingerprint_preconditions),
+                    ),
+            ),
+        };
         match (result, reconcile) {
             (Ok(result), Ok(_)) => Ok(result),
             (Ok(_), Err(error)) => {
@@ -416,6 +524,7 @@ impl PiCatalogCoordinator {
                 Some(projection) => (projection.provider_key.clone(), false),
                 None => (non_empty_native_key(&provider.id)?.to_string(), true),
             };
+            ensure_managed_native_key(&provider_key)?;
             if let Some(owner) =
                 planned_key_owners.insert(provider_key.clone(), provider.id.clone())
             {
@@ -534,7 +643,7 @@ impl PiCatalogCoordinator {
         let native_patch_receipt = if patch.is_empty() {
             None
         } else {
-            match apply_pi_provider_patch_with_receipt(models_path, &before_file, &patch) {
+            match apply_managed_pi_provider_patch_with_receipt(models_path, &before_file, &patch) {
                 Ok(receipt) => Some(receipt),
                 Err(error) => {
                     return Err(compensate_portable_projection_ledger(
@@ -630,6 +739,357 @@ impl PiCatalogCoordinator {
         resolve_native_current_provider(state, &defaults)
     }
 
+    pub(crate) fn current_state_under_switch_guard(
+        state: &AppState,
+        _switch_guard: &tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<PiCurrentState, AppError> {
+        let defaults = read_pi_native_defaults()?;
+        let (Some(provider_key), Some(model_id)) = (
+            defaults.default_provider.clone(),
+            defaults.default_model.clone(),
+        ) else {
+            return Ok(PiCurrentState {
+                provider_key: defaults.default_provider,
+                model_id: defaults.default_model,
+                managed_provider_id: None,
+                ownership: PiCurrentOwnership::Unconfigured,
+                gateway_status: None,
+                active_route: PiActiveRoute::Unavailable,
+                route_reason: PiCurrentRouteReason::Unconfigured,
+            });
+        };
+
+        let models_path = get_pi_models_path()?;
+        let is_builtin = is_pi_builtin_provider_key(&provider_key);
+        let inspection = if is_builtin {
+            None
+        } else {
+            inspect_pi_native_entry(&models_path, &provider_key, &managed_claims(state)?)?
+        };
+        let pi_owned = is_builtin || inspection.as_ref().is_some_and(is_pi_owned_native_entry);
+        if pi_owned {
+            if is_builtin {
+                return Ok(PiCurrentState {
+                    provider_key: Some(provider_key),
+                    model_id: Some(model_id),
+                    managed_provider_id: None,
+                    ownership: PiCurrentOwnership::PiNative,
+                    gateway_status: None,
+                    active_route: PiActiveRoute::Direct,
+                    route_reason: PiCurrentRouteReason::NativeCatalogUnavailable,
+                });
+            }
+            let selection_available = inspection
+                .as_ref()
+                .is_some_and(|entry| native_entry_contains_model(entry, &model_id));
+            return Ok(PiCurrentState {
+                provider_key: Some(provider_key),
+                model_id: Some(model_id),
+                managed_provider_id: None,
+                ownership: PiCurrentOwnership::PiNative,
+                gateway_status: None,
+                active_route: if selection_available {
+                    PiActiveRoute::Direct
+                } else {
+                    PiActiveRoute::Unavailable
+                },
+                route_reason: if selection_available {
+                    PiCurrentRouteReason::NativeDirect
+                } else {
+                    PiCurrentRouteReason::SelectionUnavailable
+                },
+            });
+        }
+
+        let Some(projection) = state.db.get_pi_projection_for_key(&provider_key)? else {
+            let selection_available = inspection
+                .as_ref()
+                .is_some_and(|entry| native_entry_contains_model(entry, &model_id));
+            return Ok(PiCurrentState {
+                provider_key: Some(provider_key.clone()),
+                model_id: Some(model_id),
+                managed_provider_id: None,
+                ownership: PiCurrentOwnership::External,
+                gateway_status: None,
+                active_route: if selection_available {
+                    PiActiveRoute::Direct
+                } else {
+                    PiActiveRoute::Unavailable
+                },
+                route_reason: if selection_available {
+                    PiCurrentRouteReason::NativeDirect
+                } else {
+                    PiCurrentRouteReason::SelectionUnavailable
+                },
+            });
+        };
+
+        let aggregate = ensure_managed_provider(state, &projection.provider_id)?;
+        let config: PiManagedProviderConfig =
+            serde_json::from_value(aggregate.provider.settings_config).map_err(|error| {
+                AppError::Config(format!(
+                    "managed Pi provider '{}' is invalid: {error}",
+                    projection.provider_id
+                ))
+            })?;
+        let gateway_status = gateway_status_for_config(&provider_key, &config)?;
+        if effective_pi_model(&config, &model_id).is_err() {
+            return Ok(PiCurrentState {
+                provider_key: Some(provider_key),
+                model_id: Some(model_id),
+                managed_provider_id: Some(projection.provider_id),
+                ownership: PiCurrentOwnership::Managed,
+                gateway_status: Some(gateway_status),
+                active_route: PiActiveRoute::Unavailable,
+                route_reason: PiCurrentRouteReason::SelectionUnavailable,
+            });
+        }
+        if settings::get_pi_proxy_settings().auto_failover_enabled {
+            let primary = Self::gateway_ready_failover_queue(state)?
+                .first()
+                .map(|item| item.provider_id.clone());
+            if primary.as_deref() != Some(projection.provider_id.as_str()) {
+                return Ok(PiCurrentState {
+                    provider_key: Some(provider_key),
+                    model_id: Some(model_id),
+                    managed_provider_id: Some(projection.provider_id),
+                    ownership: PiCurrentOwnership::Managed,
+                    gateway_status: Some(gateway_status),
+                    active_route: PiActiveRoute::Unavailable,
+                    route_reason: PiCurrentRouteReason::FailoverPrimaryMismatch,
+                });
+            }
+        }
+        let actual = snapshot_pi_provider_values(&models_path, [provider_key.clone()])?
+            .values
+            .get(&provider_key)
+            .cloned()
+            .flatten();
+        let direct =
+            serde_json::to_value(&config).map_err(|source| AppError::JsonSerialize { source })?;
+        let gateway = state
+            .proxy_service
+            .active_pi_gateway_projection(&projection.provider_id, &provider_key);
+        let (active_route, route_reason) = if gateway.as_ref().is_some_and(|value| {
+            gateway_status == PiGatewayStatus::Proxyable && actual.as_ref() == Some(value)
+        }) {
+            (PiActiveRoute::Gateway, PiCurrentRouteReason::ManagedGateway)
+        } else if actual.as_ref() == Some(&direct) {
+            (PiActiveRoute::Direct, PiCurrentRouteReason::ManagedDirect)
+        } else {
+            (
+                PiActiveRoute::Unavailable,
+                PiCurrentRouteReason::ManagedProjectionMismatch,
+            )
+        };
+
+        Ok(PiCurrentState {
+            provider_key: Some(provider_key),
+            model_id: Some(model_id),
+            managed_provider_id: Some(projection.provider_id),
+            ownership: PiCurrentOwnership::Managed,
+            gateway_status: Some(gateway_status),
+            active_route,
+            route_reason,
+        })
+    }
+
+    /// One control-plane answer for every caller that needs to decide whether
+    /// a managed Pi provider can enter the gateway or failover runtime.
+    #[cfg(test)]
+    pub(crate) fn gateway_status(
+        state: &AppState,
+        provider_id: &str,
+    ) -> Result<PiGatewayStatus, AppError> {
+        let aggregate = ensure_managed_provider(state, provider_id)?;
+        let projection = state.db.get_pi_projection(provider_id)?.ok_or_else(|| {
+            AppError::Conflict(format!(
+                "Pi provider '{provider_id}' has no exact-key ownership claim"
+            ))
+        })?;
+        let config: PiManagedProviderConfig =
+            serde_json::from_value(aggregate.provider.settings_config).map_err(|error| {
+                AppError::Config(format!(
+                    "managed Pi provider '{provider_id}' is invalid: {error}"
+                ))
+            })?;
+        gateway_status_for_config(&projection.provider_key, &config)
+    }
+
+    /// Gateway composition is necessary but not sufficient for admission.
+    ///
+    /// Pi may replace an exact native key with its own OAuth state while
+    /// takeover is off. Keep the stored provider manageable, but exclude it
+    /// from failover until the native ownership conflict is resolved.
+    pub(crate) fn gateway_admission_ready(
+        state: &AppState,
+        provider_id: &str,
+    ) -> Result<bool, AppError> {
+        Self::gateway_admission_snapshot(state, &[provider_id.to_string()])?
+            .get(provider_id)
+            .copied()
+            .ok_or_else(|| {
+                AppError::Config(format!(
+                    "Pi gateway admission omitted provider '{provider_id}'"
+                ))
+            })
+    }
+
+    /// Capture one native-file view for a set of managed providers.
+    ///
+    /// Composition answers whether a stored provider can be proxied; native
+    /// ownership answers whether CC Switch may currently project that exact
+    /// key. Keeping both checks in one batch prevents queue callers from
+    /// observing a mixture of different `models.json` revisions.
+    pub(crate) fn gateway_admission_snapshot(
+        state: &AppState,
+        provider_ids: &[String],
+    ) -> Result<BTreeMap<String, bool>, AppError> {
+        let manifest = state.db.get_pi_projection_manifest()?;
+        let mut provider_keys = BTreeMap::new();
+        for provider_id in provider_ids {
+            let projection = manifest.get(provider_id).ok_or_else(|| {
+                AppError::Conflict(format!(
+                    "Pi provider '{provider_id}' has no exact-key ownership claim"
+                ))
+            })?;
+            provider_keys.insert(provider_id.clone(), projection.provider_key.clone());
+        }
+        let native =
+            snapshot_pi_provider_values(&get_pi_models_path()?, provider_keys.values().cloned())?;
+
+        provider_keys
+            .into_iter()
+            .map(|(provider_id, provider_key)| {
+                let observed = native.values.get(&provider_key).and_then(Option::as_ref);
+                let aggregate = ensure_managed_provider(state, &provider_id)?;
+                let config: PiManagedProviderConfig = serde_json::from_value(
+                    aggregate.provider.settings_config,
+                )
+                .map_err(|error| {
+                    AppError::Config(format!(
+                        "managed Pi provider '{provider_id}' is invalid: {error}"
+                    ))
+                })?;
+                let composition_ready = gateway_status_for_config(&provider_key, &config)?
+                    == PiGatewayStatus::Proxyable;
+                let projection_matches = if settings::pi_takeover_enabled() {
+                    state
+                        .proxy_service
+                        .project_pi_provider_value(&provider_id, &provider_key, &config)
+                        .is_ok_and(|expected| Some(&expected) == observed)
+                } else {
+                    let direct = serde_json::to_value(config)
+                        .map_err(|source| AppError::JsonSerialize { source })?;
+                    Some(&direct) == observed
+                };
+                Ok((
+                    provider_id,
+                    composition_ready
+                        && projection_matches
+                        && !pi_owns_native_provider_value(&provider_key, observed),
+                ))
+            })
+            .collect()
+    }
+
+    /// Whether Pi currently owns authentication for any exact key still
+    /// claimed by the managed catalog.
+    pub(crate) fn native_auth_owns_managed_claim(state: &AppState) -> Result<bool, AppError> {
+        let manifest = state.db.get_pi_projection_manifest()?;
+        let native = snapshot_pi_provider_values(
+            &get_pi_models_path()?,
+            manifest
+                .values()
+                .map(|projection| projection.provider_key.clone()),
+        )?;
+        snapshot_contains_pi_owned_claim(state, &native)
+    }
+
+    /// Persisted queue membership is control-plane state and must remain
+    /// visible even when live Pi authentication makes an entry temporarily
+    /// ineligible for the gateway.
+    pub(crate) fn failover_queue_with_admission(
+        state: &AppState,
+    ) -> Result<Vec<FailoverQueueItem>, AppError> {
+        let mut queue = state.db.get_failover_queue(PI_APP)?;
+        let provider_ids = queue
+            .iter()
+            .map(|item| item.provider_id.clone())
+            .collect::<Vec<_>>();
+        let admission = Self::gateway_admission_snapshot(state, &provider_ids)?;
+        for item in &mut queue {
+            item.gateway_ready = admission.get(&item.provider_id).copied();
+        }
+        Ok(queue)
+    }
+
+    pub(crate) fn gateway_ready_failover_queue(
+        state: &AppState,
+    ) -> Result<Vec<FailoverQueueItem>, AppError> {
+        let queue = Self::failover_queue_with_admission(state)?;
+        if queue
+            .first()
+            .is_some_and(|item| item.gateway_ready != Some(true))
+        {
+            // Queue position is ownership. Never silently promote P2 when the
+            // persisted P1 becomes ineligible outside CC Switch.
+            return Ok(Vec::new());
+        }
+        Ok(queue
+            .into_iter()
+            .filter(|item| item.gateway_ready == Some(true))
+            .collect())
+    }
+
+    pub(crate) fn ensure_auto_failover_add_preserves_primary(
+        state: &AppState,
+        provider_id: &str,
+    ) -> Result<(), AppError> {
+        ensure_auto_failover_primary_stays(state, |queue| {
+            if queue.iter().any(|item| item.provider_id == provider_id) {
+                return Ok(());
+            }
+            let provider = ensure_managed_provider(state, provider_id)?.provider;
+            queue.push(FailoverQueueItem {
+                provider_id: provider.id,
+                provider_name: provider.name,
+                sort_index: provider.sort_index,
+                provider_notes: provider.notes,
+                gateway_ready: None,
+            });
+            Ok(())
+        })
+    }
+
+    pub(crate) fn ensure_auto_failover_remove_preserves_primary(
+        state: &AppState,
+        provider_id: &str,
+    ) -> Result<(), AppError> {
+        ensure_auto_failover_primary_stays(state, |queue| {
+            queue.retain(|item| item.provider_id != provider_id);
+            Ok(())
+        })
+    }
+
+    fn ensure_auto_failover_reorder_preserves_primary(
+        state: &AppState,
+        updates: &[(ProviderKey, usize)],
+    ) -> Result<(), AppError> {
+        let next_order = updates
+            .iter()
+            .map(|(key, sort_index)| (key.id().to_string(), *sort_index))
+            .collect::<BTreeMap<_, _>>();
+        ensure_auto_failover_primary_stays(state, |queue| {
+            for item in queue {
+                if let Some(sort_index) = next_order.get(&item.provider_id) {
+                    item.sort_index = Some(*sort_index);
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn reconcile_current_indexes_from_native(state: &AppState) -> Result<(), AppError> {
         let defaults = read_pi_native_defaults()?;
         let native_current = resolve_native_current_provider(state, &defaults)?;
@@ -660,8 +1120,14 @@ impl PiCatalogCoordinator {
         provider_key: String,
         activate_if_first: bool,
     ) -> Result<PiCatalogMutationResult, AppError> {
+        if input.in_failover_queue {
+            return Err(AppError::InvalidInput(
+                "Pi provider creation cannot set failover membership; create it first, then use the failover queue"
+                    .to_string(),
+            ));
+        }
         let catalog_was_empty = state.db.get_all_providers(PI_APP)?.is_empty();
-        let provider_key = non_empty_native_key(&provider_key)?;
+        let provider_key = ensure_managed_native_key(&provider_key)?;
         let config = managed_config(&input)?;
         validate_pi_initial_endpoints(&input)?;
         let provider_id = input.id.clone();
@@ -697,18 +1163,21 @@ impl PiCatalogCoordinator {
         )?;
 
         let projection = IndexMap::from([(provider_key.to_string(), Some(projected))]);
-        let native_patch_receipt =
-            match apply_pi_provider_patch_with_receipt(&models_path, &before_file, &projection) {
-                Ok(receipt) => receipt,
-                Err(projection_error) => {
-                    return Err(compensate_created_provider(
-                        state,
-                        &provider_id,
-                        None,
-                        projection_error,
-                    ));
-                }
-            };
+        let native_patch_receipt = match apply_managed_pi_provider_patch_with_receipt(
+            &models_path,
+            &before_file,
+            &projection,
+        ) {
+            Ok(receipt) => receipt,
+            Err(projection_error) => {
+                return Err(compensate_created_provider(
+                    state,
+                    &provider_id,
+                    None,
+                    projection_error,
+                ));
+            }
+        };
 
         let no_selected_provider = previous_local.is_none() && previous_db.is_none();
         let native_defaults_empty = previous_defaults.default_provider.is_none()
@@ -739,6 +1208,36 @@ impl PiCatalogCoordinator {
         Ok(result.with_native_patch_receipt(Some(native_patch_receipt)))
     }
 
+    fn set_failover_membership(
+        state: &AppState,
+        provider_id: &str,
+        in_failover_queue: bool,
+    ) -> Result<PiCatalogMutationResult, AppError> {
+        let aggregate = state
+            .db
+            .get_provider_aggregate(PI_APP, provider_id)?
+            .ok_or_else(|| AppError::NotFound(format!("Pi provider '{provider_id}'")))?;
+        if aggregate.provider.in_failover_queue == in_failover_queue {
+            return Ok(success(Some(provider_id.to_string())));
+        }
+        if in_failover_queue {
+            if !Self::gateway_admission_ready(state, provider_id)? {
+                return Err(AppError::Conflict(format!(
+                    "Pi provider '{provider_id}' is not gateway-ready and cannot join failover"
+                )));
+            }
+            Self::ensure_auto_failover_add_preserves_primary(state, provider_id)?;
+        } else {
+            Self::ensure_auto_failover_remove_preserves_primary(state, provider_id)?;
+        }
+        if in_failover_queue {
+            state.db.add_to_failover_queue(PI_APP, provider_id)?;
+        } else {
+            state.db.remove_from_failover_queue(PI_APP, provider_id)?;
+        }
+        Ok(success(Some(provider_id.to_string())))
+    }
+
     fn update(
         state: &AppState,
         input: ProviderMutationInput,
@@ -754,9 +1253,36 @@ impl PiCatalogCoordinator {
             .db
             .get_provider_aggregate(PI_APP, &provider_id)?
             .ok_or_else(|| AppError::NotFound(format!("Pi provider '{provider_id}'")))?;
+        let previous_config: PiManagedProviderConfig =
+            serde_json::from_value(previous.provider.settings_config.clone()).map_err(|error| {
+                AppError::Config(format!(
+                    "managed Pi provider '{provider_id}' is invalid: {error}"
+                ))
+            })?;
+        let previous_gateway =
+            gateway_status_for_config(&projection.provider_key, &previous_config)?;
+        let next_gateway = gateway_status_for_config(&projection.provider_key, &config)?;
         let previous_defaults = read_pi_native_defaults()?;
         let previous_db = state.db.get_current_provider(PI_APP)?;
         let was_current = previous_db.as_deref() == Some(&provider_id);
+        if was_current {
+            ensure_auto_failover_target_is_gateway_ready(next_gateway)?;
+        }
+        if previous.provider.in_failover_queue
+            && previous_gateway == PiGatewayStatus::Proxyable
+            && next_gateway != PiGatewayStatus::Proxyable
+        {
+            return Err(AppError::Conflict(
+                "remove this Pi provider from failover before making it direct-only".to_string(),
+            ));
+        }
+        // Old versions could leave a direct-only provider marked as a queue
+        // member. Clear that stale bit only while automatic failover is off.
+        // When failover is on, persisted P1 membership is the ownership
+        // boundary and repairing the provider must not silently replace it.
+        let clear_stale_failover = previous.provider.in_failover_queue
+            && previous_gateway != PiGatewayStatus::Proxyable
+            && !settings::get_pi_proxy_settings().auto_failover_enabled;
         let models_path = get_pi_models_path()?;
         let before_file =
             snapshot_pi_provider_values(&models_path, [projection.provider_key.clone()])?;
@@ -767,24 +1293,50 @@ impl PiCatalogCoordinator {
         )?;
 
         let key = ProviderKey::new(PI_APP, provider_id.clone())?;
-        state
-            .db
-            .update_pi_catalog_provider(&key, &ProviderRowUpdate::from_input(&input)?)?;
+        let row = ProviderRowUpdate::from_input(&input)?;
+        if clear_stale_failover {
+            if let Err(error) = state.db.remove_from_failover_queue(PI_APP, &provider_id) {
+                return Err(compensate_existing_provider(
+                    state,
+                    &previous,
+                    was_current,
+                    &projection,
+                    None,
+                    error,
+                ));
+            }
+        }
+        if let Err(error) = state.db.update_pi_catalog_provider(&key, &row) {
+            if clear_stale_failover {
+                return Err(compensate_existing_provider(
+                    state,
+                    &previous,
+                    was_current,
+                    &projection,
+                    None,
+                    error,
+                ));
+            }
+            return Err(error);
+        }
         let patch = IndexMap::from([(projection.provider_key.clone(), Some(projected))]);
-        let native_patch_receipt =
-            match apply_pi_provider_patch_with_receipt(&models_path, &before_file, &patch) {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    return Err(compensate_existing_provider(
-                        state,
-                        &previous,
-                        was_current,
-                        &projection,
-                        None,
-                        error,
-                    ));
-                }
-            };
+        let native_patch_receipt = match apply_managed_pi_provider_patch_with_receipt(
+            &models_path,
+            &before_file,
+            &patch,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                return Err(compensate_existing_provider(
+                    state,
+                    &previous,
+                    was_current,
+                    &projection,
+                    None,
+                    error,
+                ));
+            }
+        };
         let mut result = success(Some(provider_id.clone()));
         if previous_defaults.default_provider.as_deref() == Some(&projection.provider_key) {
             if let Some(default_model) = previous_defaults.default_model.as_deref() {
@@ -817,42 +1369,64 @@ impl PiCatalogCoordinator {
     }
 
     fn delete(state: &AppState, provider_id: &str) -> Result<PiCatalogMutationResult, AppError> {
-        let projection = state
-            .db
-            .get_pi_projection(provider_id)?
-            .ok_or_else(|| AppError::NotFound(format!("Pi provider '{provider_id}'")))?;
         let previous = state
             .db
             .get_provider_aggregate(PI_APP, provider_id)?
             .ok_or_else(|| AppError::NotFound(format!("Pi provider '{provider_id}'")))?;
+        if previous.provider.in_failover_queue {
+            Self::ensure_auto_failover_remove_preserves_primary(state, provider_id)?;
+        }
+        let Some(projection) = state.db.get_pi_projection(provider_id)? else {
+            // A failed portable reconciliation can leave an unclaimed row.
+            // It owns no native key, so deleting the row is a safe detach and
+            // must not attempt to edit Pi's file.
+            state.db.delete_pi_catalog_provider(provider_id)?;
+            return Ok(success(Some(provider_id.to_string())));
+        };
         let db_current = state.db.get_current_provider(PI_APP)?;
         let native_defaults = read_pi_native_defaults()?;
-        if native_defaults.default_provider.as_deref() == Some(&projection.provider_key) {
+        let models_path = get_pi_models_path()?;
+        let before_file =
+            snapshot_pi_provider_values(&models_path, [projection.provider_key.clone()])?;
+        let native_is_pi_owned = is_pi_builtin_provider_key(&projection.provider_key)
+            || before_file
+                .values
+                .get(&projection.provider_key)
+                .and_then(Option::as_ref)
+                .is_some_and(value_uses_pi_owned_auth);
+        if native_defaults.default_provider.as_deref() == Some(&projection.provider_key)
+            && !native_is_pi_owned
+        {
             return Err(AppError::Conflict(
                 "the active Pi provider cannot be deleted".to_string(),
             ));
         }
 
-        let models_path = get_pi_models_path()?;
-        let before_file =
-            snapshot_pi_provider_values(&models_path, [projection.provider_key.clone()])?;
         let was_current = db_current.as_deref() == Some(provider_id);
         state.db.delete_pi_catalog_provider(provider_id)?;
+        if native_is_pi_owned {
+            // Ownership changed outside CC Switch. Release the stale database
+            // claim while preserving Pi's value byte-for-byte.
+            return Ok(success(Some(provider_id.to_string())));
+        }
         let patch = IndexMap::from([(projection.provider_key.clone(), None)]);
-        let native_patch_receipt =
-            match apply_pi_provider_patch_with_receipt(&models_path, &before_file, &patch) {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    return Err(compensate_existing_provider(
-                        state,
-                        &previous,
-                        was_current,
-                        &projection,
-                        None,
-                        error,
-                    ));
-                }
-            };
+        let native_patch_receipt = match apply_managed_pi_provider_patch_with_receipt(
+            &models_path,
+            &before_file,
+            &patch,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                return Err(compensate_existing_provider(
+                    state,
+                    &previous,
+                    was_current,
+                    &projection,
+                    None,
+                    error,
+                ));
+            }
+        };
         Ok(success(Some(provider_id.to_string()))
             .with_native_patch_receipt(Some(native_patch_receipt)))
     }
@@ -971,6 +1545,20 @@ impl PiCatalogCoordinator {
                 "Pi provider '{provider_id}' has no exact-key ownership claim"
             ))
         })?;
+        let native =
+            snapshot_pi_provider_values(&get_pi_models_path()?, [projection.provider_key.clone()])?;
+        let observed = native
+            .values
+            .get(&projection.provider_key)
+            .and_then(Option::as_ref);
+        if pi_owns_native_provider_value(&projection.provider_key, observed) {
+            return Err(AppError::Conflict(format!(
+                "Pi native provider key '{}' is no longer managed by CC Switch",
+                projection.provider_key
+            )));
+        }
+        let gateway_status = gateway_status_for_config(&projection.provider_key, &config)?;
+        ensure_auto_failover_default(state, provider_id, gateway_status)?;
 
         let previous_local = settings::get_current_provider(&AppType::Pi);
         let previous_db = state.db.get_current_provider(PI_APP)?;
@@ -1050,6 +1638,108 @@ fn managed_config(input: &ProviderMutationInput) -> Result<PiManagedProviderConf
     Ok(config)
 }
 
+fn gateway_status_for_config(
+    provider_key: &str,
+    config: &PiManagedProviderConfig,
+) -> Result<PiGatewayStatus, AppError> {
+    let composition = compose_managed_pi_provider(provider_key, config)?;
+    let assessment = assess_composition_for_runtime(&composition);
+    Ok(match assessment.capability {
+        PiGatewayCapability::Proxyable if assessment.plans.len() == composition.models.len() => {
+            PiGatewayStatus::Proxyable
+        }
+        PiGatewayCapability::DirectOnly => PiGatewayStatus::DirectOnly,
+        PiGatewayCapability::Proxyable | PiGatewayCapability::Unknown => PiGatewayStatus::Unknown,
+    })
+}
+
+fn ensure_auto_failover_target_is_gateway_ready(
+    gateway_status: PiGatewayStatus,
+) -> Result<(), AppError> {
+    if settings::get_pi_proxy_settings().auto_failover_enabled
+        && gateway_status != PiGatewayStatus::Proxyable
+    {
+        return Err(AppError::Conflict(
+            "disable Pi auto failover before selecting a direct-only provider".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_auto_failover_default(
+    state: &AppState,
+    provider_id: &str,
+    gateway_status: PiGatewayStatus,
+) -> Result<(), AppError> {
+    ensure_auto_failover_target_is_gateway_ready(gateway_status)?;
+    if !settings::get_pi_proxy_settings().auto_failover_enabled {
+        return Ok(());
+    }
+
+    let primary = PiCatalogCoordinator::gateway_ready_failover_queue(state)?
+        .first()
+        .map(|item| item.provider_id.clone());
+    if primary.as_deref() != Some(provider_id) {
+        return Err(AppError::Conflict(
+            "Pi auto failover is enabled; the failover queue primary owns the managed default"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_auto_failover_primary_stays(
+    state: &AppState,
+    project: impl FnOnce(&mut Vec<FailoverQueueItem>) -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    if !settings::get_pi_proxy_settings().auto_failover_enabled {
+        return Ok(());
+    }
+
+    // Mutation ownership follows the persisted queue, even when external Pi
+    // auth drift makes its current primary temporarily ineligible at runtime.
+    // Otherwise that drift would silently remove the primary from this check
+    // and allow callers to mutate the queue while auto failover still owns it.
+    let mut queue = state.db.get_failover_queue(PI_APP)?;
+    let previous_primary = queue.first().map(|item| item.provider_id.clone());
+    project(&mut queue)?;
+    queue.sort_by(|left, right| {
+        left.sort_index
+            .unwrap_or(999_999)
+            .cmp(&right.sort_index.unwrap_or(999_999))
+            .then_with(|| left.provider_id.cmp(&right.provider_id))
+    });
+    let next_primary = queue.first().map(|item| item.provider_id.clone());
+    if previous_primary != next_primary {
+        return Err(AppError::Conflict(
+            "disable Pi auto failover before changing the failover queue primary".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn snapshot_contains_pi_owned_claim(
+    state: &AppState,
+    native: &PiProviderValuesSnapshot,
+) -> Result<bool, AppError> {
+    for projection in state.db.get_pi_projection_manifest()?.values() {
+        let observed = native
+            .values
+            .get(&projection.provider_key)
+            .ok_or_else(|| {
+                AppError::Config(format!(
+                    "Pi native snapshot omitted claimed key '{}'",
+                    projection.provider_key
+                ))
+            })?
+            .as_ref();
+        if pi_owns_native_provider_value(&projection.provider_key, observed) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn ensure_managed_provider(
     state: &AppState,
     provider_id: &str,
@@ -1080,6 +1770,17 @@ fn non_empty_native_key(value: &str) -> Result<&str, AppError> {
         Err(AppError::InvalidInput(
             "Pi native provider key cannot be empty".to_string(),
         ))
+    } else {
+        Ok(value)
+    }
+}
+
+fn ensure_managed_native_key(value: &str) -> Result<&str, AppError> {
+    let value = non_empty_native_key(value)?;
+    if is_pi_builtin_provider_key(value) {
+        Err(AppError::Conflict(format!(
+            "Pi built-in provider key '{value}' is owned by Pi; use Pi native login instead"
+        )))
     } else {
         Ok(value)
     }
@@ -1278,9 +1979,21 @@ fn resolve_native_current_provider(
     let Some(provider_key) = defaults.default_provider.as_deref() else {
         return Ok(None);
     };
+    if is_pi_builtin_provider_key(provider_key) {
+        return Ok(None);
+    }
     let Some(projection) = state.db.get_pi_projection_for_key(provider_key)? else {
         return Ok(None);
     };
+    let native = snapshot_pi_provider_values(&get_pi_models_path()?, [provider_key.to_string()])?;
+    if native
+        .values
+        .get(provider_key)
+        .and_then(Option::as_ref)
+        .is_some_and(value_uses_pi_owned_auth)
+    {
+        return Ok(None);
+    }
     Ok(state
         .db
         .get_provider_aggregate(PI_APP, &projection.provider_id)?
@@ -1299,6 +2012,10 @@ fn success(provider_id: Option<String>) -> PiCatalogMutationResult {
 }
 
 impl PiCatalogMutationResult {
+    pub(crate) fn into_native_defaults_receipt(mut self) -> Option<PiNativeDefaultsReceipt> {
+        self.native_defaults_receipt.take()
+    }
+
     fn with_native_defaults_receipt(mut self, receipt: Option<PiNativeDefaultsReceipt>) -> Self {
         self.native_defaults_receipt = receipt;
         self
@@ -1407,6 +2124,978 @@ mod tests {
         app_settings.pi_config_dir = Some(path.to_string_lossy().into_owned());
         app_settings.pi_takeover_enabled = false;
         crate::settings::update_settings(app_settings)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn managed_create_cannot_shadow_a_pi_builtin_provider_key() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+
+        let error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("shadow", "https://example.com/v1"),
+                provider_key: "anthropic".to_string(),
+                activate_if_first: false,
+            },
+        )
+        .expect_err("Pi owns built-in keys");
+
+        assert!(error.to_string().contains("owned by Pi"));
+        assert!(state.db.get_provider_aggregate(PI_APP, "shadow")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn delete_detaches_unclaimed_rows_without_touching_pi_native_content() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        configure_pi_directory(&pi_dir)?;
+        std::fs::create_dir_all(&pi_dir).expect("create Pi directory");
+        let native = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "claude"}]
+        });
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"anthropic": native}
+            }))
+            .expect("serialize models"),
+        )
+        .expect("write models");
+        let state = AppState::new(Arc::new(Database::memory()?));
+        insert_portable_pi_provider(state.db.as_ref(), "anthropic")?;
+
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::DeleteProvider {
+                provider_id: "anthropic".to_string(),
+            },
+        )?;
+
+        assert!(state
+            .db
+            .get_provider_aggregate(PI_APP, "anthropic")?
+            .is_none());
+        let live =
+            snapshot_pi_provider_values(&pi_dir.join("models.json"), ["anthropic".to_string()])?;
+        assert_eq!(
+            live.values.get("anthropic").cloned().flatten(),
+            Some(native)
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn delete_releases_a_stale_claim_after_pi_takes_over_authentication() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        configure_pi_directory(&pi_dir)?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider", "https://managed.example/v1"),
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+        let native = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "claude"}]
+        });
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"managed-provider": native}
+            }))
+            .expect("serialize models"),
+        )
+        .expect("write models");
+        set_pi_native_default_with_receipt("managed-provider", "claude")?;
+        assert_eq!(
+            PiCatalogCoordinator::current_native_provider(&state)?,
+            None,
+            "Pi-owned authentication must release the derived managed-current marker"
+        );
+
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::DeleteProvider {
+                provider_id: "provider".to_string(),
+            },
+        )?;
+
+        assert!(state
+            .db
+            .get_provider_aggregate(PI_APP, "provider")?
+            .is_none());
+        assert!(state.db.get_pi_projection("provider")?.is_none());
+        let live = snapshot_pi_provider_values(
+            &pi_dir.join("models.json"),
+            ["managed-provider".to_string()],
+        )?;
+        assert_eq!(
+            live.values.get("managed-provider").cloned().flatten(),
+            Some(native)
+        );
+        let defaults = read_pi_native_defaults()?;
+        assert_eq!(
+            defaults.default_provider.as_deref(),
+            Some("managed-provider")
+        );
+        assert_eq!(defaults.default_model.as_deref(), Some("claude"));
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn managed_default_rejects_a_claim_taken_over_by_pi_authentication() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        configure_pi_directory(&pi_dir)?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider", "https://managed.example/v1"),
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+
+        let oauth = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "native-model"}]
+        });
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"managed-provider": oauth}
+            }))
+            .expect("serialize models"),
+        )
+        .expect("write models");
+        set_pi_native_default_with_receipt("managed-provider", "native-model")?;
+
+        let error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "provider".to_string(),
+                model_id: "model-a".to_string(),
+            },
+        )
+        .expect_err("Pi-owned authentication must fence the stale managed picker entry");
+
+        assert!(error.to_string().contains("no longer managed"));
+        let defaults = read_pi_native_defaults()?;
+        assert_eq!(
+            defaults.default_provider.as_deref(),
+            Some("managed-provider")
+        );
+        assert_eq!(
+            defaults.default_model.as_deref(),
+            Some("native-model"),
+            "the rejected managed selection must preserve Pi's native model"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn enabled_auto_failover_blocks_deleting_a_stale_p1_claim() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        configure_pi_directory(&pi_dir)?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider", "https://managed.example/v1"),
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+        state.db.add_to_failover_queue(PI_APP, "provider")?;
+        let mut proxy = settings::get_pi_proxy_settings();
+        proxy.auto_failover_enabled = true;
+        settings::update_pi_proxy_settings(proxy)?;
+
+        let oauth = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "claude"}]
+        });
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"managed-provider": oauth}
+            }))
+            .expect("serialize models"),
+        )
+        .expect("write models");
+        set_pi_native_default_with_receipt("managed-provider", "claude")?;
+
+        let error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::DeleteProvider {
+                provider_id: "provider".to_string(),
+            },
+        )
+        .expect_err("enabled failover must retain its queue primary");
+
+        assert!(error
+            .to_string()
+            .contains("changing the failover queue primary"));
+        assert!(state
+            .db
+            .get_provider_aggregate(PI_APP, "provider")?
+            .is_some());
+        assert!(state.db.get_pi_projection("provider")?.is_some());
+        assert!(state.db.is_in_failover_queue(PI_APP, "provider")?);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn enabled_auto_failover_owns_the_managed_default() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        for provider_id in ["primary", "outside"] {
+            PiCatalogCoordinator::apply(
+                &state,
+                PiCatalogMutation::CreateProvider {
+                    input: managed_input(provider_id, "https://example.com/v1"),
+                    provider_key: format!("managed-{provider_id}"),
+                    activate_if_first: false,
+                },
+            )?;
+        }
+        let mut direct = managed_input("direct", "https://example.com");
+        direct.settings_config["headers"] = json!({"Host": "example.com"});
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: direct,
+                provider_key: "managed-direct".to_string(),
+                activate_if_first: false,
+            },
+        )?;
+        state.db.add_to_failover_queue(PI_APP, "primary")?;
+        let mut proxy = settings::get_pi_proxy_settings();
+        proxy.auto_failover_enabled = true;
+        settings::update_pi_proxy_settings(proxy)?;
+
+        let direct_error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "direct".to_string(),
+                model_id: "model-a".to_string(),
+            },
+        )
+        .expect_err("direct-only providers cannot bypass enabled failover");
+        assert!(direct_error
+            .to_string()
+            .contains("disable Pi auto failover"));
+
+        let outside_error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "outside".to_string(),
+                model_id: "model-a".to_string(),
+            },
+        )
+        .expect_err("the queue primary owns the default while failover is enabled");
+        assert!(outside_error.to_string().contains("queue primary"));
+
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "primary".to_string(),
+                model_id: "model-a".to_string(),
+            },
+        )?;
+        assert_eq!(
+            read_pi_native_defaults()?.default_provider.as_deref(),
+            Some("managed-primary")
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn enabled_auto_failover_rejects_membership_changes_that_replace_p1() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        for (provider_id, sort_index) in [("earlier", 0), ("primary", 1), ("later", 2)] {
+            let mut input = managed_input(provider_id, "https://example.com/v1");
+            input.sort_index = Some(sort_index);
+            PiCatalogCoordinator::apply(
+                &state,
+                PiCatalogMutation::CreateProvider {
+                    input,
+                    provider_key: format!("managed-{provider_id}"),
+                    activate_if_first: false,
+                },
+            )?;
+        }
+        state.db.add_to_failover_queue(PI_APP, "primary")?;
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "primary".to_string(),
+                model_id: "model-a".to_string(),
+            },
+        )?;
+        let mut proxy = settings::get_pi_proxy_settings();
+        proxy.auto_failover_enabled = true;
+        settings::update_pi_proxy_settings(proxy)?;
+
+        let earlier =
+            PiCatalogCoordinator::ensure_auto_failover_add_preserves_primary(&state, "earlier")
+                .expect_err("an earlier-sorted member would replace P1");
+        assert!(earlier
+            .to_string()
+            .contains("changing the failover queue primary"));
+
+        PiCatalogCoordinator::ensure_auto_failover_add_preserves_primary(&state, "later")?;
+        state.db.add_to_failover_queue(PI_APP, "later")?;
+        let remove_primary =
+            PiCatalogCoordinator::ensure_auto_failover_remove_preserves_primary(&state, "primary")
+                .expect_err("removing P1 must be rejected while failover is enabled");
+        assert!(remove_primary
+            .to_string()
+            .contains("changing the failover queue primary"));
+        PiCatalogCoordinator::ensure_auto_failover_remove_preserves_primary(&state, "later")?;
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn failover_membership_runtime_failure_restores_the_exact_catalog_snapshot(
+    ) -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider", "https://example.com/v1"),
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: false,
+            },
+        )?;
+
+        state.proxy_service.fail_next_pi_reconcile_for_test();
+        let add_error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetFailoverMembership {
+                provider_id: "provider".to_string(),
+                in_failover_queue: true,
+            },
+        )
+        .expect_err("failed runtime publication must undo queue insertion");
+        assert!(add_error
+            .to_string()
+            .contains("previous catalog was restored"));
+        assert!(!state.db.is_in_failover_queue(PI_APP, "provider")?);
+
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetFailoverMembership {
+                provider_id: "provider".to_string(),
+                in_failover_queue: true,
+            },
+        )?;
+        state.proxy_service.fail_next_pi_reconcile_for_test();
+        let remove_error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetFailoverMembership {
+                provider_id: "provider".to_string(),
+                in_failover_queue: false,
+            },
+        )
+        .expect_err("failed runtime publication must undo queue removal");
+        assert!(remove_error
+            .to_string()
+            .contains("previous catalog was restored"));
+        assert!(state.db.is_in_failover_queue(PI_APP, "provider")?);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pi_owned_native_auth_is_not_advertised_or_admitted_to_failover() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider", "https://example.com/v1"),
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: false,
+            },
+        )?;
+        assert!(PiCatalogCoordinator::gateway_admission_ready(
+            &state, "provider"
+        )?);
+
+        let models_path = get_pi_models_path()?;
+        std::fs::write(
+            &models_path,
+            serde_json::to_vec_pretty(&json!({
+                "providers": {
+                    "managed-provider": {
+                        "api": "anthropic-messages",
+                        "baseUrl": "https://api.anthropic.com",
+                        "oauth": "radius",
+                        "models": [{"id": "model-a"}]
+                    }
+                }
+            }))
+            .expect("serialize Pi-owned entry"),
+        )
+        .expect("replace native entry");
+
+        assert_eq!(
+            PiCatalogCoordinator::gateway_status(&state, "provider")?,
+            PiGatewayStatus::Proxyable,
+            "stored composition capability remains independently inspectable"
+        );
+        assert!(!PiCatalogCoordinator::gateway_admission_ready(
+            &state, "provider"
+        )?);
+        let error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetFailoverMembership {
+                provider_id: "provider".to_string(),
+                in_failover_queue: true,
+            },
+        )
+        .expect_err("Pi-owned native authentication must block gateway admission");
+        assert!(error.to_string().contains("not gateway-ready"));
+        assert!(!state.db.is_in_failover_queue(PI_APP, "provider")?);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn oauth_drift_keeps_persisted_queue_visible_without_promoting_p2() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        configure_pi_directory(&pi_dir)?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        for provider_id in ["primary", "secondary"] {
+            PiCatalogCoordinator::apply(
+                &state,
+                PiCatalogMutation::CreateProvider {
+                    input: managed_input(provider_id, "https://example.com/v1"),
+                    provider_key: provider_id.to_string(),
+                    activate_if_first: false,
+                },
+            )?;
+            PiCatalogCoordinator::apply(
+                &state,
+                PiCatalogMutation::SetFailoverMembership {
+                    provider_id: provider_id.to_string(),
+                    in_failover_queue: true,
+                },
+            )?;
+        }
+
+        let models_path = pi_dir.join("models.json");
+        let mut document: Value =
+            serde_json::from_slice(&std::fs::read(&models_path).expect("read models"))
+                .expect("parse models");
+        let oauth = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "claude"}]
+        });
+        document["providers"]["primary"] = oauth.clone();
+        std::fs::write(
+            &models_path,
+            serde_json::to_vec_pretty(&document).expect("serialize models"),
+        )
+        .expect("replace primary with Pi OAuth");
+
+        let queue = PiCatalogCoordinator::failover_queue_with_admission(&state)?;
+        assert_eq!(
+            queue
+                .iter()
+                .map(|item| (item.provider_id.as_str(), item.gateway_ready))
+                .collect::<Vec<_>>(),
+            vec![("primary", Some(false)), ("secondary", Some(true))]
+        );
+        assert!(
+            PiCatalogCoordinator::gateway_ready_failover_queue(&state)?.is_empty(),
+            "an ineligible persisted P1 must not silently promote P2"
+        );
+
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetFailoverMembership {
+                provider_id: "primary".to_string(),
+                in_failover_queue: false,
+            },
+        )?;
+        assert!(!state.db.is_in_failover_queue(PI_APP, "primary")?);
+        let live: Value =
+            serde_json::from_slice(&std::fs::read(&models_path).expect("read preserved models"))
+                .expect("parse preserved models");
+        assert_eq!(live.pointer("/providers/primary"), Some(&oauth));
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pi_create_cannot_bypass_the_failover_membership_authority() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        let mut input = managed_input("provider", "https://example.com/v1");
+        input.in_failover_queue = true;
+
+        let error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input,
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: true,
+            },
+        )
+        .expect_err("Pi creation must not own failover membership");
+
+        assert!(error.to_string().contains("create it first"));
+        assert!(state
+            .db
+            .get_provider_aggregate(PI_APP, "provider")?
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn enabled_auto_failover_rejects_reordering_a_new_provider_into_p1() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        for (provider_id, sort_index) in [("primary", 0), ("secondary", 1)] {
+            let mut input = managed_input(provider_id, "https://example.com/v1");
+            input.sort_index = Some(sort_index);
+            PiCatalogCoordinator::apply(
+                &state,
+                PiCatalogMutation::CreateProvider {
+                    input,
+                    provider_key: format!("managed-{provider_id}"),
+                    activate_if_first: false,
+                },
+            )?;
+            state.db.add_to_failover_queue(PI_APP, provider_id)?;
+        }
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "primary".to_string(),
+                model_id: "model-a".to_string(),
+            },
+        )?;
+        let mut proxy = settings::get_pi_proxy_settings();
+        proxy.auto_failover_enabled = true;
+        settings::update_pi_proxy_settings(proxy)?;
+
+        let error = PiCatalogCoordinator::update_route_order(
+            &state,
+            vec![
+                (ProviderKey::new(PI_APP, "primary")?, 1),
+                (ProviderKey::new(PI_APP, "secondary")?, 0),
+            ],
+        )
+        .expect_err("reordering must not replace P1 while failover is enabled");
+
+        assert!(error
+            .to_string()
+            .contains("changing the failover queue primary"));
+        assert_eq!(
+            state.db.get_failover_queue(PI_APP)?[0].provider_id,
+            "primary"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn current_state_reports_unconfigured_from_one_locked_read() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        let guard = state.proxy_service.lock_switch_for_app(PI_APP).await;
+
+        let current = PiCatalogCoordinator::current_state_under_switch_guard(&state, &guard)?;
+
+        assert_eq!(current.ownership, PiCurrentOwnership::Unconfigured);
+        assert_eq!(current.active_route, PiActiveRoute::Unavailable);
+        assert_eq!(current.route_reason, PiCurrentRouteReason::Unconfigured);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn current_state_reports_builtin_ownership_as_direct_without_guessing_model_availability(
+    ) -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        set_pi_native_default_with_receipt("anthropic", "unverified-model")?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        let guard = state.proxy_service.lock_switch_for_app(PI_APP).await;
+
+        let current = PiCatalogCoordinator::current_state_under_switch_guard(&state, &guard)?;
+
+        assert_eq!(current.ownership, PiCurrentOwnership::PiNative);
+        assert_eq!(current.active_route, PiActiveRoute::Direct);
+        assert_eq!(
+            current.route_reason,
+            PiCurrentRouteReason::NativeCatalogUnavailable
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn current_state_distinguishes_managed_direct_from_gateway_intent() -> Result<(), AppError>
+    {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider", "https://example.com/v1"),
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+        let guard = state.proxy_service.lock_switch_for_app(PI_APP).await;
+
+        let current = PiCatalogCoordinator::current_state_under_switch_guard(&state, &guard)?;
+
+        assert_eq!(current.ownership, PiCurrentOwnership::Managed);
+        assert_eq!(current.gateway_status, Some(PiGatewayStatus::Proxyable));
+        assert_eq!(current.active_route, PiActiveRoute::Direct);
+        assert_eq!(current.route_reason, PiCurrentRouteReason::ManagedDirect);
+
+        drop(guard);
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "managed-provider",
+            "missing-model",
+        )?;
+        let guard = state.proxy_service.lock_switch_for_app(PI_APP).await;
+        let missing = PiCatalogCoordinator::current_state_under_switch_guard(&state, &guard)?;
+        assert_eq!(missing.ownership, PiCurrentOwnership::Managed);
+        assert_eq!(missing.active_route, PiActiveRoute::Unavailable);
+        assert_eq!(
+            missing.route_reason,
+            PiCurrentRouteReason::SelectionUnavailable
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn current_state_rejects_an_external_managed_switch_away_from_failover_p1(
+    ) -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        for provider_id in ["primary", "secondary"] {
+            PiCatalogCoordinator::apply(
+                &state,
+                PiCatalogMutation::CreateProvider {
+                    input: managed_input(provider_id, "https://example.com/v1"),
+                    provider_key: format!("managed-{provider_id}"),
+                    activate_if_first: false,
+                },
+            )?;
+        }
+        state.db.add_to_failover_queue(PI_APP, "primary")?;
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "secondary".to_string(),
+                model_id: "model-a".to_string(),
+            },
+        )?;
+        let mut proxy = settings::get_pi_proxy_settings();
+        proxy.auto_failover_enabled = true;
+        settings::update_pi_proxy_settings(proxy)?;
+        let guard = state.proxy_service.lock_switch_for_app(PI_APP).await;
+
+        let current = PiCatalogCoordinator::current_state_under_switch_guard(&state, &guard)?;
+
+        assert_eq!(current.managed_provider_id.as_deref(), Some("secondary"));
+        assert_eq!(current.active_route, PiActiveRoute::Unavailable);
+        assert_eq!(
+            current.route_reason,
+            PiCurrentRouteReason::FailoverPrimaryMismatch
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn current_state_uses_native_auth_ownership_and_checks_external_models(
+    ) -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        configure_pi_directory(&pi_dir)?;
+        std::fs::create_dir_all(&pi_dir).expect("create Pi directory");
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {
+                    "subscription": {
+                        "api": "anthropic-messages",
+                        "baseUrl": "https://api.anthropic.com",
+                        "oauth": "radius",
+                        "models": [{"id": "claude"}]
+                    }
+                }
+            }))
+            .expect("serialize models"),
+        )
+        .expect("write models");
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "subscription",
+            "claude",
+        )?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        let guard = state.proxy_service.lock_switch_for_app(PI_APP).await;
+
+        let current = PiCatalogCoordinator::current_state_under_switch_guard(&state, &guard)?;
+
+        assert_eq!(current.ownership, PiCurrentOwnership::PiNative);
+        assert_eq!(current.active_route, PiActiveRoute::Direct);
+
+        drop(guard);
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "missing-external",
+            "missing-model",
+        )?;
+        let guard = state.proxy_service.lock_switch_for_app(PI_APP).await;
+        let missing = PiCatalogCoordinator::current_state_under_switch_guard(&state, &guard)?;
+        assert_eq!(missing.ownership, PiCurrentOwnership::External);
+        assert_eq!(missing.active_route, PiActiveRoute::Unavailable);
+        assert_eq!(
+            missing.route_reason,
+            PiCurrentRouteReason::SelectionUnavailable
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn live_pi_owned_auth_outranks_a_stale_managed_claim() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        let pi_dir = temp.path().join("pi-agent");
+        configure_pi_directory(&pi_dir)?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: managed_input("provider", "https://managed.example/v1"),
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: true,
+            },
+        )?;
+
+        let oauth = json!({
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "oauth": "radius",
+            "models": [{"id": "claude"}]
+        });
+        std::fs::write(
+            pi_dir.join("models.json"),
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"managed-provider": oauth}
+            }))
+            .expect("serialize models"),
+        )
+        .expect("write models");
+        crate::pi_config::native_settings::set_pi_native_default_with_receipt(
+            "managed-provider",
+            "claude",
+        )?;
+
+        let guard = state.proxy_service.lock_switch_for_app(PI_APP).await;
+        let current = PiCatalogCoordinator::current_state_under_switch_guard(&state, &guard)?;
+        assert_eq!(current.ownership, PiCurrentOwnership::PiNative);
+        assert_eq!(current.managed_provider_id, None);
+        assert_eq!(current.active_route, PiActiveRoute::Direct);
+        drop(guard);
+
+        let error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::UpdateProvider {
+                input: managed_input("provider", "https://updated.example/v1"),
+            },
+        )
+        .expect_err("managed update must not replace Pi-owned authentication");
+        assert!(error.to_string().contains("Pi-owned authentication"));
+
+        let live = snapshot_pi_provider_values(
+            &pi_dir.join("models.json"),
+            ["managed-provider".to_string()],
+        )?;
+        assert_eq!(
+            live.values.get("managed-provider").cloned().flatten(),
+            Some(oauth)
+        );
+        assert_eq!(
+            state
+                .db
+                .get_provider_aggregate(PI_APP, "provider")?
+                .expect("managed aggregate")
+                .provider
+                .settings_config
+                .get("baseUrl"),
+            Some(&json!("https://managed.example/v1"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn failover_membership_cannot_cross_the_gateway_capability_boundary() -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        let mut direct = managed_input("provider", "https://example.com/v1");
+        direct.settings_config["api"] = json!("future-wire-v9");
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: direct,
+                provider_key: "managed-provider".to_string(),
+                activate_if_first: false,
+            },
+        )?;
+        state.db.add_to_failover_queue(PI_APP, "provider")?;
+
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::UpdateProvider {
+                input: managed_input("provider", "https://example.com/v1"),
+            },
+        )?;
+        assert!(
+            !state.db.is_in_failover_queue(PI_APP, "provider")?,
+            "a stale direct-only membership must not resurrect after becoming proxyable"
+        );
+
+        state.db.add_to_failover_queue(PI_APP, "provider")?;
+        let mut next_direct = managed_input("provider", "https://example.com/v1");
+        next_direct.settings_config["api"] = json!("future-wire-v10");
+        let error = PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::UpdateProvider { input: next_direct },
+        )
+        .expect_err("a queued provider cannot become direct-only");
+        assert!(error.to_string().contains("remove this Pi provider"));
+        assert_eq!(
+            PiCatalogCoordinator::gateway_status(&state, "provider")?,
+            PiGatewayStatus::Proxyable
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn repairing_a_legacy_direct_only_primary_preserves_enabled_failover_ownership(
+    ) -> Result<(), AppError> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = TestHome::install(temp.path())?;
+        configure_pi_directory(&temp.path().join("pi-agent"))?;
+        let state = AppState::new(Arc::new(Database::memory()?));
+        let mut direct = managed_input("primary", "https://example.com/v1");
+        direct.settings_config["api"] = json!("future-wire-v9");
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::CreateProvider {
+                input: direct,
+                provider_key: "managed-primary".to_string(),
+                activate_if_first: false,
+            },
+        )?;
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::SetDefault {
+                provider_id: "primary".to_string(),
+                model_id: "model-a".to_string(),
+            },
+        )?;
+        state.db.add_to_failover_queue(PI_APP, "primary")?;
+        let mut proxy = settings::get_pi_proxy_settings();
+        proxy.auto_failover_enabled = true;
+        settings::update_pi_proxy_settings(proxy)?;
+
+        PiCatalogCoordinator::apply(
+            &state,
+            PiCatalogMutation::UpdateProvider {
+                input: managed_input("primary", "https://example.com/v1"),
+            },
+        )?;
+
+        assert!(
+            state.db.is_in_failover_queue(PI_APP, "primary")?,
+            "repairing queue P1 must not silently release its ownership"
+        );
+        assert_eq!(
+            state.db.get_current_provider(PI_APP)?.as_deref(),
+            Some("primary")
+        );
+        assert_eq!(
+            PiCatalogCoordinator::gateway_ready_failover_queue(&state)?
+                .first()
+                .map(|item| item.provider_id.as_str()),
+            Some("primary")
+        );
+        Ok(())
     }
 
     #[test]
@@ -1684,6 +3373,29 @@ mod tests {
             Some(&expected),
             "all portable provider fields must survive SQL import and native publication"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn portable_import_cannot_claim_a_pi_builtin_provider_key() -> Result<(), AppError> {
+        let db = Arc::new(Database::memory()?);
+        insert_portable_pi_provider(&db, "anthropic")?;
+        let state = AppState::new(db.clone());
+        let temp = tempfile::tempdir().expect("tempdir");
+        let models_path = temp.path().join("models.json");
+
+        let error = PiCatalogCoordinator::reconcile_portable_catalog_at(
+            &state,
+            &models_path,
+            |_, _, config| {
+                serde_json::to_value(config).map_err(|source| AppError::JsonSerialize { source })
+            },
+        )
+        .expect_err("portable data cannot claim a Pi-owned key");
+
+        assert!(error.to_string().contains("owned by Pi"));
+        assert!(db.get_pi_projection("anthropic")?.is_none());
+        assert!(!models_path.exists());
         Ok(())
     }
 

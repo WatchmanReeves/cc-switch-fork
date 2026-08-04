@@ -89,13 +89,11 @@ export function useProxyStatus() {
         }),
         { closeButton: true },
       );
-      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
-      queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
       // 彻底删除所有供应商健康状态缓存（后端已清空数据库记录）
       queryClient.removeQueries({ queryKey: ["providerHealth"] });
       // 彻底删除所有熔断器统计缓存（代理停止后熔断器状态已重置）
       queryClient.removeQueries({ queryKey: ["circuitBreakerStats"] });
-      // 注意：故障转移队列和开关状态会保留，不需要刷新
+      // 队列成员会保留；Pi 的自动故障转移开关由全局停止原子关闭。
     },
     onError: (error: Error) => {
       const detail =
@@ -107,6 +105,20 @@ export function useProxyStatus() {
           defaultValue: `停止失败: ${detail}`,
         }),
       );
+    },
+    // Global shutdown has several durable stages. Even an error may follow a
+    // successful Pi policy/projection transition, so always re-read authority.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
+      queryClient.invalidateQueries({
+        queryKey: ["autoFailoverEnabled", "pi"],
+      });
+      queryClient.invalidateQueries({
+        queryKey: proxyKeys.appConfig("pi"),
+      });
+      queryClient.invalidateQueries({ queryKey: ["pi", "currentState"] });
+      queryClient.invalidateQueries({ queryKey: ["pi", "nativeDefaults"] });
     },
   });
 
@@ -143,8 +155,8 @@ export function useProxyStatus() {
     },
     // Pi persists desired takeover before attempting listener/runtime work.
     // A rejected IPC can therefore still have changed authoritative state.
-    onSettled: async () => {
-      await Promise.all([
+    onSettled: async (_data, _error, variables) => {
+      const refreshes: Promise<unknown>[] = [
         queryClient.refetchQueries({
           queryKey: proxyKeys.status,
           type: "active",
@@ -153,7 +165,15 @@ export function useProxyStatus() {
           queryKey: proxyKeys.takeoverStatus,
           type: "active",
         }),
-      ]);
+      ];
+      if (variables.appType === "pi") {
+        refreshes.push(
+          queryClient.invalidateQueries({
+            queryKey: ["pi", "currentState"],
+          }),
+        );
+      }
+      await Promise.all(refreshes);
     },
   });
 
