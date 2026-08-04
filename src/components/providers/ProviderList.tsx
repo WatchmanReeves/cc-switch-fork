@@ -18,7 +18,8 @@ import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { Provider } from "@/types";
-import type { AppId } from "@/lib/api";
+import { piApi, type AppId } from "@/lib/api";
+import type { PiCurrentState } from "@/lib/api/pi";
 import { providersApi } from "@/lib/api/providers";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { useDragSort } from "@/hooks/useDragSort";
@@ -31,8 +32,12 @@ import {
   useHermesModelConfig,
 } from "@/hooks/useHermes";
 import { useStreamCheck } from "@/hooks/useStreamCheck";
-import { ProviderCard } from "@/components/providers/ProviderCard";
+import {
+  ProviderCard,
+  ProviderSummaryCard,
+} from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
+import type { ProviderStatusBadgeData } from "@/components/providers/ProviderStatusBadge";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
@@ -48,6 +53,28 @@ import { useCallback } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { isTextEditableTarget } from "@/utils/domUtils";
+import { invalidatePiControlPlaneCaches } from "@/lib/query/mutations";
+
+function createPiCurrentSummaryProvider(
+  current: PiCurrentState | undefined,
+  displayName?: string,
+): Provider | undefined {
+  if (
+    !current?.providerKey ||
+    current.ownership === "managed" ||
+    current.ownership === "unconfigured"
+  ) {
+    return undefined;
+  }
+
+  return {
+    id: `__pi-current__:${current.providerKey}`,
+    name: displayName?.trim() || current.providerKey,
+    settingsConfig: {},
+    icon: "pi",
+    category: current.ownership === "pi_native" ? "official" : "custom",
+  };
+}
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -229,6 +256,38 @@ export function ProviderList({
     enabled: appId === "claude-desktop",
     refetchInterval: appId === "claude-desktop" ? 5000 : false,
   });
+  const { data: piCurrentState } = useQuery({
+    queryKey: ["pi", "currentState"],
+    queryFn: () => piApi.getCurrentState(),
+    enabled: appId === "pi",
+  });
+  const { data: piNativeCatalog = [] } = useQuery({
+    queryKey: ["pi", "nativeCatalog"],
+    queryFn: () => piApi.getNativeCatalog(),
+    enabled:
+      appId === "pi" &&
+      piCurrentState?.ownership === "external" &&
+      Boolean(piCurrentState.providerKey),
+  });
+  const piCurrentCatalogEntry = useMemo(
+    () =>
+      piNativeCatalog.find(
+        (entry) => entry.providerKey === piCurrentState?.providerKey,
+      ),
+    [piCurrentState?.providerKey, piNativeCatalog],
+  );
+  const piImportableCurrent =
+    piCurrentCatalogEntry?.managementStatus.status === "importable"
+      ? piCurrentCatalogEntry
+      : undefined;
+  const piSummaryProvider = useMemo(
+    () =>
+      createPiCurrentSummaryProvider(
+        piCurrentState,
+        piCurrentCatalogEntry?.displayName,
+      ),
+    [piCurrentCatalogEntry?.displayName, piCurrentState],
+  );
 
   // 连通性检查不发真实请求、无封号/计费风险，直接执行（无需确认弹窗）。
   const handleTest = useCallback(
@@ -258,15 +317,35 @@ export function ProviderList({
         const count = await providersApi.importClaudeDesktopFromClaude();
         return count > 0;
       }
+      if (appId === "pi") {
+        if (!piImportableCurrent) return false;
+        await piApi.importNativeProvider(
+          piImportableCurrent.providerKey,
+          piImportableCurrent.fingerprint,
+        );
+        return true;
+      }
       return providersApi.importDefault(appId);
     },
-    onSuccess: (imported) => {
+    onSuccess: async (imported) => {
       if (imported) {
-        queryClient.invalidateQueries({ queryKey: ["providers", appId] });
-        if (appId === "claude-desktop") {
-          queryClient.invalidateQueries({ queryKey: ["claudeDesktopStatus"] });
+        if (appId === "pi") {
+          await invalidatePiControlPlaneCaches(queryClient);
+        } else {
+          await queryClient.invalidateQueries({
+            queryKey: ["providers", appId],
+          });
         }
-        toast.success(t("provider.importCurrentDescription"));
+        if (appId === "claude-desktop") {
+          await queryClient.invalidateQueries({
+            queryKey: ["claudeDesktopStatus"],
+          });
+        }
+        toast.success(
+          appId === "pi"
+            ? t("pi.native.imported")
+            : t("provider.importCurrentDescription"),
+        );
       } else {
         toast.info(t("provider.noProviders"));
       }
@@ -382,6 +461,41 @@ export function ProviderList({
     return messages;
   }, [appId, claudeDesktopStatus, t]);
 
+  const piSummaryBadges = useMemo<ProviderStatusBadgeData[]>(() => {
+    if (!piCurrentState || !piSummaryProvider) return [];
+
+    const badges: ProviderStatusBadgeData[] = [
+      {
+        label: t("provider.inUse"),
+        tone: "info",
+      },
+      {
+        label: t(`pi.current.ownership.${piCurrentState.ownership}`),
+        tone: "muted",
+      },
+    ];
+
+    if (
+      piCurrentState.ownership === "pi_native" ||
+      piCurrentState.gatewayStatus === "direct_only"
+    ) {
+      badges.push({
+        label: t("provider.noRoutingSupport"),
+        tone: "muted",
+      });
+    }
+
+    return badges;
+  }, [piCurrentState, piSummaryProvider, t]);
+
+  const piCurrentSummary = piSummaryProvider ? (
+    <ProviderSummaryCard
+      provider={piSummaryProvider}
+      appId="pi"
+      statusBadges={piSummaryBadges}
+    />
+  ) : null;
+
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -397,11 +511,18 @@ export function ProviderList({
 
   if (sortedProviders.length === 0) {
     return (
-      <ProviderEmptyState
-        appId={appId}
-        onCreate={onCreate}
-        onImport={appId === "pi" ? undefined : () => importMutation.mutate()}
-      />
+      <div className="mt-4 space-y-4">
+        {piCurrentSummary}
+        <ProviderEmptyState
+          appId={appId}
+          onCreate={appId === "pi" ? undefined : onCreate}
+          onImport={
+            appId !== "pi" || piImportableCurrent
+              ? () => importMutation.mutate()
+              : undefined
+          }
+        />
+      </div>
     );
   }
 
@@ -424,20 +545,37 @@ export function ProviderList({
               isOmoSlim && provider.id === (currentOmoSlimId || "");
             const isHermesCurrent =
               appId === "hermes" && hermesCurrentProviderId === provider.id;
+            const isPiManagedCurrent =
+              appId === "pi" &&
+              piCurrentState?.ownership === "managed" &&
+              piCurrentState.managedProviderId === provider.id;
+            const isCurrent =
+              appId === "pi" && piCurrentState
+                ? isPiManagedCurrent
+                : isOmo
+                  ? isOmoCurrent
+                  : isOmoSlim
+                    ? isOmoSlimCurrent
+                    : appId === "hermes"
+                      ? isHermesCurrent
+                      : provider.id === currentProviderId;
             return (
               <SortableProviderCard
                 key={provider.id}
                 provider={provider}
-                isCurrent={
-                  isOmo
-                    ? isOmoCurrent
-                    : isOmoSlim
-                      ? isOmoSlimCurrent
-                      : appId === "hermes"
-                        ? isHermesCurrent
-                        : provider.id === currentProviderId
-                }
+                isCurrent={isCurrent}
                 appId={appId}
+                statusBadges={
+                  isPiManagedCurrent &&
+                  piCurrentState.gatewayStatus === "direct_only"
+                    ? [
+                        {
+                          label: t("provider.noRoutingSupport"),
+                          tone: "muted",
+                        },
+                      ]
+                    : undefined
+                }
                 isInConfig={isProviderInConfig(provider.id)}
                 isOmo={isOmo}
                 isOmoSlim={isOmoSlim}
@@ -482,6 +620,7 @@ export function ProviderList({
 
   return (
     <div className="mt-4 space-y-4">
+      {piCurrentSummary}
       {claudeDesktopStatusMessages.length > 0 && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
           <div className="flex items-center gap-2 font-medium">
@@ -604,6 +743,7 @@ interface SortableProviderCardProps {
   // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
+  statusBadges?: ProviderStatusBadgeData[];
 }
 
 function SortableProviderCard({
@@ -635,6 +775,7 @@ function SortableProviderCard({
   activeProviderId,
   isDefaultModel,
   onSetAsDefault,
+  statusBadges,
 }: SortableProviderCardProps) {
   const {
     setNodeRef,
@@ -689,6 +830,7 @@ function SortableProviderCard({
         // OpenClaw: default model
         isDefaultModel={isDefaultModel}
         onSetAsDefault={onSetAsDefault}
+        statusBadges={statusBadges}
       />
     </div>
   );

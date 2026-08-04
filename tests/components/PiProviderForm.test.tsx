@@ -1,5 +1,12 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PiProviderForm } from "@/components/providers/forms/PiProviderForm";
 import composerOracle from "../fixtures/pi/native-oracle/composer-oracle-v1.json";
@@ -9,6 +16,33 @@ import { server } from "../msw/server";
 const TAURI_ENDPOINT = "http://tauri.local";
 
 describe("PiProviderForm", () => {
+  beforeEach(() => {
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("uses the shared provider form structure without numbered steps", () => {
+    const { container } = render(
+      <PiProviderForm
+        appId="pi"
+        submitLabel="Save preset"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(container.querySelector("#provider-form")).toHaveClass(
+      "glass",
+      "rounded-xl",
+      "p-6",
+    );
+    expect(screen.getByLabelText("provider.name")).toBeInTheDocument();
+    expect(screen.getByLabelText("provider.notes")).toBeInTheDocument();
+    expect(screen.getByLabelText("provider.websiteUrl")).toBeInTheDocument();
+    expect(screen.queryByText("pi.form.stepPreset")).not.toBeInTheDocument();
+    expect(screen.queryByText("pi.form.stepAuth")).not.toBeInTheDocument();
+    expect(screen.queryByText("pi.form.stepModel")).not.toBeInTheDocument();
+  });
+
   it("applies a maintained preset without creating a Pi-owned provider key", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(
@@ -37,6 +71,38 @@ describe("PiProviderForm", () => {
       baseUrl: "https://api.moonshot.cn/v1",
       apiKey: "literal-key",
     });
+    expect(
+      screen.queryByText("pi.form.nativeLoginAlternative"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stores the selected default model first without dropping preset models", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PiProviderForm
+        appId="pi"
+        submitLabel="Save preset"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Kimi", { selector: "span" }));
+    fireEvent.change(screen.getByLabelText("pi.form.credential"), {
+      target: { value: "literal-key" },
+    });
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "pi.form.defaultModel" }),
+    );
+    fireEvent.click(await screen.findByRole("option", { name: /Kimi K3/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save preset" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const config = JSON.parse(onSubmit.mock.calls[0][0].settingsConfig);
+    expect(config.models.map((model: { id: string }) => model.id)).toEqual([
+      "kimi-k3",
+      "kimi-k2.7-code",
+    ]);
   });
 
   it("submits only explicit model fields and leaves pinned defaults to Pi", async () => {
@@ -57,7 +123,7 @@ describe("PiProviderForm", () => {
     fireEvent.change(screen.getByPlaceholderText("my-provider"), {
       target: { value: "verified-provider" },
     });
-    fireEvent.change(screen.getByPlaceholderText("My Pi provider"), {
+    fireEvent.change(screen.getByLabelText("provider.name"), {
       target: { value: "Verified provider" },
     });
     fireEvent.change(screen.getByPlaceholderText("openai-responses"), {
@@ -84,6 +150,64 @@ describe("PiProviderForm", () => {
       baseUrl: "https://api.example.com/v1",
       models: [{ id: "opaque-model" }],
     });
+  });
+
+  it("reuses the shared model fetch command and lets the user select a real result", async () => {
+    const user = userEvent.setup();
+    let requestBody: Record<string, unknown> | undefined;
+    server.use(
+      http.post(
+        `${TAURI_ENDPOINT}/fetch_models_for_config`,
+        async ({ request }) => {
+          requestBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json([
+            { id: "remote-model-a", ownedBy: "remote" },
+            { id: "remote-model-b", ownedBy: "remote" },
+          ]);
+        },
+      ),
+    );
+
+    render(
+      <PiProviderForm
+        appId="pi"
+        submitLabel="Save fetched provider"
+        onSubmit={vi.fn()}
+        onCancel={() => {}}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerPreset.custom" }),
+    );
+    fireEvent.change(screen.getByLabelText("pi.form.credential"), {
+      target: { value: "literal-key" },
+    });
+    fireEvent.change(
+      screen.getByPlaceholderText("https://api.example.com/v1"),
+      {
+        target: { value: "https://models.example/v1" },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+
+    await waitFor(() =>
+      expect(requestBody).toEqual({
+        baseUrl: "https://models.example/v1",
+        apiKey: "literal-key",
+      }),
+    );
+
+    const modelIdInput = screen.getByLabelText("pi.form.modelId");
+    await user.click(
+      within(modelIdInput.parentElement as HTMLElement).getByRole("button"),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "remote-model-b" }),
+    );
+    expect(modelIdInput).toHaveValue("remote-model-b");
   });
 
   it("round-trips every field in the pinned all-fields composer vector", async () => {
@@ -188,7 +312,7 @@ describe("PiProviderForm", () => {
     fireEvent.change(screen.getByPlaceholderText("my-provider"), {
       target: { value: "endpoint-provider" },
     });
-    fireEvent.change(screen.getByPlaceholderText("My Pi provider"), {
+    fireEvent.change(screen.getByLabelText("provider.name"), {
       target: { value: "Endpoint provider" },
     });
     fireEvent.change(screen.getByPlaceholderText("openai-responses"), {
@@ -260,6 +384,11 @@ describe("PiProviderForm", () => {
       />,
     );
 
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "providerForm.advancedOptionsToggle",
+      }),
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "pi.form.manageEndpoints" }),
     );

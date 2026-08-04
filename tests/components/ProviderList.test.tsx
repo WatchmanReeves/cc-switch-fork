@@ -1,9 +1,13 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
+import { http, HttpResponse } from "msw";
 import type { Provider } from "@/types";
 import { ProviderList } from "@/components/providers/ProviderList";
+import { server } from "../msw/server";
+
+const TAURI_ENDPOINT = "http://tauri.local";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
@@ -64,6 +68,19 @@ vi.mock("@/components/providers/ProviderCard", () => ({
         <span data-testid={`drag-attr-${provider.id}`}>
           {props.dragHandleProps?.attributes?.["data-dnd-id"] ?? "none"}
         </span>
+      </div>
+    );
+  },
+  ProviderSummaryCard: (props: any) => {
+    const summaryProps = {
+      ...props,
+      isCurrent: true,
+      variant: "summary",
+    };
+    providerCardRenderSpy(summaryProps);
+    return (
+      <div data-testid={`provider-summary-${props.provider.id}`}>
+        {props.provider.name}
       </div>
     );
   },
@@ -352,4 +369,159 @@ describe("ProviderList Component", () => {
       );
     },
   );
+
+  it("renders a Pi-native current selection through the shared summary card", async () => {
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/get_pi_current_state`, () =>
+        HttpResponse.json({
+          providerKey: "anthropic",
+          modelId: "claude-opus",
+          ownership: "pi_native",
+          activeRoute: "direct",
+          routeReason: "native_direct",
+        }),
+      ),
+    );
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{}}
+        currentProviderId=""
+        appId="pi"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(providerCardRenderSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          variant: "summary",
+          provider: expect.objectContaining({
+            name: "anthropic",
+            icon: "pi",
+          }),
+          statusBadges: expect.arrayContaining([
+            expect.objectContaining({ label: "provider.inUse" }),
+            expect.objectContaining({
+              label: "provider.noRoutingSupport",
+            }),
+          ]),
+        }),
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: "provider.addProvider" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not translate Pi gateway capability into a false routing requirement", async () => {
+    const provider = createProvider({
+      id: "managed-pi",
+      name: "Managed Pi",
+    });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/get_pi_current_state`, () =>
+        HttpResponse.json({
+          providerKey: "managed-pi",
+          modelId: "managed-model",
+          managedProviderId: "managed-pi",
+          ownership: "managed",
+          gatewayStatus: "proxyable",
+          activeRoute: "gateway",
+          routeReason: "managed_gateway",
+        }),
+      ),
+    );
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ [provider.id]: provider }}
+        currentProviderId="managed-pi"
+        appId="pi"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      const currentCard = providerCardRenderSpy.mock.calls
+        .map(([props]) => props)
+        .find((props) => props.provider.id === "managed-pi");
+      expect(currentCard).toMatchObject({
+        isCurrent: true,
+        statusBadges: undefined,
+      });
+      expect(currentCard).not.toHaveProperty("subtitle");
+    });
+  });
+
+  it("shows the import action only for an importable external Pi current selection", async () => {
+    let imports = 0;
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/get_pi_current_state`, () =>
+        HttpResponse.json({
+          providerKey: "external-provider",
+          modelId: "external-model",
+          ownership: "external",
+          activeRoute: "direct",
+          routeReason: "native_direct",
+        }),
+      ),
+      http.post(`${TAURI_ENDPOINT}/get_pi_native_catalog`, () =>
+        HttpResponse.json([
+          {
+            providerKey: "external-provider",
+            displayName: "External Provider",
+            fingerprint: "opaque-fingerprint",
+            kind: "custom_catalog",
+            rawValidity: "valid",
+            managedAssessment: "manageable",
+            compositionStatus: "composed",
+            managementStatus: { status: "importable" },
+            gatewayStatus: "proxyable",
+            reasons: [],
+          },
+        ]),
+      ),
+      http.post(`${TAURI_ENDPOINT}/import_pi_native_provider`, () => {
+        imports += 1;
+        return HttpResponse.json("external-provider");
+      }),
+    );
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{}}
+        currentProviderId=""
+        appId="pi"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "provider.importCurrent" }),
+    );
+    await waitFor(() => expect(imports).toBe(1));
+    expect(
+      screen.queryByRole("button", { name: "provider.addProvider" }),
+    ).not.toBeInTheDocument();
+  });
 });

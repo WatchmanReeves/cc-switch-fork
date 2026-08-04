@@ -12,11 +12,15 @@ import { getAppLabel } from "@/config/appConfig";
 /**
  * 获取供应商健康状态
  */
-export function useProviderHealth(providerId: string, appType: string) {
+export function useProviderHealth(
+  providerId: string,
+  appType: string,
+  enabled = true,
+) {
   return useQuery({
     queryKey: ["providerHealth", providerId, appType],
     queryFn: () => failoverApi.getProviderHealth(providerId, appType),
-    enabled: !!providerId && !!appType,
+    enabled: enabled && !!providerId && !!appType,
     refetchInterval: 5000, // 每 5 秒刷新一次
     retry: false,
   });

@@ -1,20 +1,49 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Loader2,
+  Plus,
+  Trash2,
+} from "lucide-react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { Form } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import type { ProviderFormProps, ProviderFormValues } from "./ProviderForm";
+import { BasicFormFields } from "./BasicFormFields";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { ProviderPresetSelector } from "./ProviderPresetSelector";
-import { ApiKeySection } from "./shared";
+import { ApiKeySection, EndpointField, ModelDropdown } from "./shared";
 import {
   piProviderPresets,
   type PiProviderPreset,
 } from "@/config/piProviderPresets";
+import {
+  fetchModelsForConfig,
+  showFetchModelsError,
+  type FetchedModel,
+} from "@/lib/api/model-fetch";
+import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
 import type {
   CustomEndpoint,
   EndpointCandidate,
@@ -162,11 +191,6 @@ export function PiProviderForm({
   );
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [providerKey, setProviderKey] = useState(providerId ?? "");
-  const [name, setName] = useState(
-    initialData?.name ?? optionalText(initialConfig.name),
-  );
-  const [websiteUrl, setWebsiteUrl] = useState(initialData?.websiteUrl ?? "");
-  const [notes, setNotes] = useState(initialData?.notes ?? "");
   const [baseUrl, setBaseUrl] = useState(optionalText(initialConfig.baseUrl));
   const [api, setApi] = useState(optionalText(initialConfig.api));
   const [apiKey, setApiKey] = useState(optionalText(initialConfig.apiKey));
@@ -191,11 +215,32 @@ export function PiProviderForm({
   const [draftCustomEndpoints, setDraftCustomEndpoints] = useState<string[]>(
     () => Object.keys(initialData?.meta?.custom_endpoints ?? {}),
   );
+  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [models, setModels] = useState<PiModelDraft[]>(() => {
     const configured = Array.isArray(initialConfig.models)
       ? initialConfig.models
       : [];
     return configured.length > 0 ? configured.map(modelDraft) : [newModel()];
+  });
+  const [selectedModelKey, setSelectedModelKey] = useState(
+    () => models[0]?.key ?? "",
+  );
+  const identityDefaults = useMemo<ProviderFormData>(
+    () => ({
+      name: initialData?.name ?? optionalText(initialConfig.name),
+      websiteUrl: initialData?.websiteUrl ?? "",
+      notes: initialData?.notes ?? "",
+      settingsConfig: "{}",
+      icon: initialData?.icon ?? "",
+      iconColor: initialData?.iconColor ?? "",
+    }),
+    [initialConfig, initialData],
+  );
+  const form = useForm<ProviderFormData>({
+    resolver: zodResolver(providerSchema),
+    defaultValues: identityDefaults,
+    mode: "onSubmit",
   });
 
   const presetEntries = useMemo(
@@ -213,6 +258,20 @@ export function PiProviderForm({
       setSelectedPreset(null);
       setCategory("custom");
       setAdvancedOpen(true);
+      setProviderKey("");
+      form.reset(identityDefaults);
+      setBaseUrl("");
+      setApi("");
+      setApiKey("");
+      setAuthHeader(false);
+      setAuthHeaderExplicit(false);
+      setHeadersJson("{}");
+      setAdditionalJson("{}");
+      setDraftCustomEndpoints([]);
+      setFetchedModels([]);
+      const model = newModel();
+      setModels([model]);
+      setSelectedModelKey(model.key);
       return;
     }
     const entry = presetEntries.find((candidate) => candidate.id === id);
@@ -222,8 +281,14 @@ export function PiProviderForm({
     setSelectedPreset(preset);
     setCategory(preset.category ?? "custom");
     setProviderKey(preset.providerKey);
-    setName(preset.settingsConfig.name);
-    setWebsiteUrl(preset.websiteUrl);
+    form.reset({
+      name: preset.settingsConfig.name,
+      websiteUrl: preset.websiteUrl,
+      notes: "",
+      settingsConfig: "{}",
+      icon: preset.icon ?? "",
+      iconColor: preset.iconColor ?? "",
+    });
     setBaseUrl(preset.settingsConfig.baseUrl);
     setApi(preset.settingsConfig.api);
     setApiKey("");
@@ -232,7 +297,12 @@ export function PiProviderForm({
     setHeadersJson("{}");
     setAdditionalJson("{}");
     setDraftCustomEndpoints([]);
-    setModels(preset.settingsConfig.models.map((model) => modelDraft(model)));
+    setFetchedModels([]);
+    const nextModels = preset.settingsConfig.models.map((model) =>
+      modelDraft(model),
+    );
+    setModels(nextModels);
+    setSelectedModelKey(nextModels[0]?.key ?? "");
   };
 
   const updateModel = (
@@ -246,11 +316,55 @@ export function PiProviderForm({
     );
   };
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const addModel = () => {
+    const model = newModel();
+    setModels((current) => [...current, model]);
+    if (!selectedModelKey) {
+      setSelectedModelKey(model.key);
+    }
+  };
+
+  const removeModel = (key: string) => {
+    const nextModels = models.filter((model) => model.key !== key);
+    setModels(nextModels);
+    if (selectedModelKey === key) {
+      setSelectedModelKey(nextModels[0]?.key ?? "");
+    }
+  };
+
+  const handleFetchModels = useCallback(() => {
+    const endpoint = baseUrl.trim();
+    if (!endpoint || !apiKey) {
+      showFetchModelsError(null, t, {
+        hasApiKey: Boolean(apiKey),
+        hasBaseUrl: Boolean(endpoint),
+      });
+      return;
+    }
+
+    setIsFetchingModels(true);
+    fetchModelsForConfig(endpoint, apiKey)
+      .then((result) => {
+        setFetchedModels(result);
+        if (result.length === 0) {
+          toast.info(t("providerForm.fetchModelsEmpty"));
+        } else {
+          toast.success(
+            t("providerForm.fetchModelsSuccess", { count: result.length }),
+          );
+        }
+      })
+      .catch((error) => {
+        console.warn("[ModelFetch] Failed:", error);
+        showFetchModelsError(error, t);
+      })
+      .finally(() => setIsFetchingModels(false));
+  }, [apiKey, baseUrl, t]);
+
+  const submit = async (identity: ProviderFormData) => {
     onSubmittingChange?.(true);
     try {
-      const trimmedName = name.trim();
+      const trimmedName = identity.name.trim();
       const trimmedKey = providerKey.trim();
       if (!trimmedName) throw new Error(t("pi.form.nameRequired"));
       if (!isEdit && !trimmedKey) {
@@ -278,8 +392,17 @@ export function PiProviderForm({
         }),
         t("pi.form.nonFiniteNumber", { label: providerAdditionalLabel }),
       );
+      // Pi and the existing switch command treat the first model as the
+      // provider default. Keep that wire format stable while exposing an
+      // explicit model choice in the form.
+      const orderedModels = selectedModelKey
+        ? [
+            ...models.filter((model) => model.key === selectedModelKey),
+            ...models.filter((model) => model.key !== selectedModelKey),
+          ]
+        : models;
       const seen = new Set<string>();
-      const normalizedModels = models.map((model, index) => {
+      const normalizedModels = orderedModels.map((model, index) => {
         // Pinned Pi treats model IDs as opaque, exact strings. In particular,
         // its schema accepts whitespace-only and edge-whitespace IDs; trimming
         // here would silently rename an imported model.
@@ -364,11 +487,11 @@ export function PiProviderForm({
       }
       const values: ProviderFormValues = {
         name: trimmedName,
-        websiteUrl: websiteUrl.trim(),
-        notes: notes.trim(),
+        websiteUrl: identity.websiteUrl?.trim() ?? "",
+        notes: identity.notes?.trim() ?? "",
         settingsConfig: JSON.stringify(settingsConfig),
-        icon: initialData?.icon ?? selectedPreset?.icon ?? "pi",
-        iconColor: initialData?.iconColor ?? selectedPreset?.iconColor ?? "",
+        icon: identity.icon || selectedPreset?.icon || "pi",
+        iconColor: identity.iconColor || selectedPreset?.iconColor || "",
         providerKey: isEdit ? providerId : trimmedKey,
         presetId: selectedPresetId ?? undefined,
         presetCategory: category,
@@ -404,324 +527,394 @@ export function PiProviderForm({
     }),
     [t],
   );
+  const showDefaultModelSelect =
+    models.length > 0 && (isEdit || selectedPreset !== null);
+
+  const defaultModelSelect = (
+    <div className="space-y-2">
+      <Label htmlFor="pi-default-model">{t("pi.form.defaultModel")}</Label>
+      <Select value={selectedModelKey} onValueChange={setSelectedModelKey}>
+        <SelectTrigger id="pi-default-model" className="w-full">
+          <SelectValue placeholder={t("pi.form.defaultModelPlaceholder")} />
+        </SelectTrigger>
+        <SelectContent>
+          {models.map((model, index) => (
+            <SelectItem key={model.key} value={model.key}>
+              {model.name ||
+                model.id ||
+                t("pi.form.modelNumber", { index: index + 1 })}
+              {model.name && model.id ? ` · ${model.id}` : ""}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">{t("pi.form.modelsHint")}</p>
+    </div>
+  );
 
   return (
-    <form id="provider-form" onSubmit={submit} className="space-y-6">
-      {!isEdit && (
-        <section className="space-y-2">
-          <h3 className="text-sm font-medium">{t("pi.form.stepPreset")}</h3>
+    <Form {...form}>
+      <form
+        id="provider-form"
+        onSubmit={form.handleSubmit(submit)}
+        className="space-y-6 glass rounded-xl p-6 border border-white/10"
+      >
+        {!isEdit && (
           <ProviderPresetSelector
             selectedPresetId={selectedPresetId}
             presetEntries={presetEntries}
             presetCategoryLabels={presetCategoryLabels}
             onPresetChange={selectPreset}
             category={category}
-            categoryHint={t("pi.form.presetHint")}
           />
-        </section>
-      )}
+        )}
 
-      <section className="space-y-3">
-        <div>
-          <h3 className="text-sm font-medium">{t("pi.form.stepAuth")}</h3>
-          <p className="text-xs text-muted-foreground">
-            {t("pi.form.managedCredentialHint")}
-          </p>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label={t("pi.form.displayName")}>
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="My Pi provider"
-            />
-          </Field>
-          <div>
-            <ApiKeySection
-              label={t("pi.form.credential")}
-              value={apiKey}
-              onChange={setApiKey}
-              category={category}
-              shouldShowLink={Boolean(selectedPreset?.apiKeyUrl)}
-              websiteUrl={selectedPreset?.apiKeyUrl ?? ""}
-              isPartner={selectedPreset?.isPartner}
-              partnerPromotionKey={selectedPreset?.partnerPromotionKey}
-              placeholder={{
-                official: "literal, $ENV, or !command",
-                thirdParty: "literal, $ENV, or !command",
-              }}
-            />
-            <p className="text-xs text-muted-foreground">
-              {t("pi.form.credentialHint")}
-            </p>
-          </div>
-        </div>
-        <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-          {t("pi.form.nativeLoginAlternative")}
-        </p>
-      </section>
+        <BasicFormFields
+          form={form}
+          beforeNameSlot={
+            isEdit || selectedPresetId === "custom" ? (
+              <div className="space-y-2">
+                <Label htmlFor="pi-provider-key">
+                  {t("pi.form.providerKey")}
+                  <span className="text-destructive ml-1">*</span>
+                </Label>
+                <Input
+                  id="pi-provider-key"
+                  value={providerKey}
+                  onChange={(event) =>
+                    setProviderKey(
+                      event.target.value
+                        .toLowerCase()
+                        .replace(/[^a-z0-9-]/g, ""),
+                    )
+                  }
+                  disabled={isEdit}
+                  placeholder="my-provider"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("pi.form.providerKeyHint")}
+                </p>
+              </div>
+            ) : undefined
+          }
+        />
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-medium">{t("pi.form.stepModel")}</h3>
-            <p className="text-xs text-muted-foreground">
-              {t("pi.form.modelsHint")}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
+        <ApiKeySection
+          id="pi-api-key"
+          label={t("pi.form.credential")}
+          value={apiKey}
+          onChange={setApiKey}
+          category={category}
+          shouldShowLink={Boolean(selectedPreset?.apiKeyUrl)}
+          websiteUrl={selectedPreset?.apiKeyUrl ?? ""}
+          isPartner={selectedPreset?.isPartner}
+          partnerPromotionKey={selectedPreset?.partnerPromotionKey}
+          placeholder={{
+            official: t("pi.form.apiKeyPlaceholder"),
+            thirdParty: t("pi.form.apiKeyPlaceholder"),
+          }}
+        />
+
+        {showDefaultModelSelect && defaultModelSelect}
+
+        <Collapsible
+          open={advancedOpen}
+          onOpenChange={setAdvancedOpen}
+          className="rounded-lg border border-border-default p-4"
+        >
+          <CollapsibleTrigger asChild>
             <Button
               type="button"
-              variant="ghost"
+              variant={null}
               size="sm"
-              onClick={() => setAdvancedOpen((current) => !current)}
-              className="gap-1"
+              className="h-8 w-full justify-start gap-1.5 px-0 text-sm font-medium text-foreground hover:opacity-70"
+              aria-expanded={advancedOpen}
             >
               {advancedOpen ? (
                 <ChevronDown className="h-4 w-4" />
               ) : (
                 <ChevronRight className="h-4 w-4" />
               )}
-              {t("pi.form.advanced")}
+              {t("providerForm.advancedOptionsToggle")}
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setModels((current) => [...current, newModel()])}
-            >
-              <Plus className="mr-1 h-4 w-4" />
-              {t("pi.form.addModel")}
-            </Button>
-          </div>
-        </div>
-        {models.map((model, index) => (
-          <div
-            key={model.key}
-            className="space-y-3 rounded-lg border bg-muted/20 p-4"
-          >
-            <div className="flex items-center justify-between">
-              <h4 className="text-sm font-medium">
-                {t("pi.form.modelNumber", { index: index + 1 })}
-              </h4>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() =>
-                  setModels((current) =>
-                    current.filter((item) => item.key !== model.key),
-                  )
-                }
-                aria-label={t("pi.form.removeModel")}
-              >
-                <Trash2 className="h-4 w-4 text-destructive" />
-              </Button>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label={t("pi.form.modelId")}>
-                <Input
-                  value={model.id}
-                  onChange={(event) =>
-                    updateModel(model.key, { id: event.target.value })
-                  }
-                  placeholder="model-id"
-                />
-              </Field>
-              <Field label={t("pi.form.modelName")}>
-                <Input
-                  value={model.name}
-                  onChange={(event) =>
-                    updateModel(model.key, { name: event.target.value })
-                  }
-                  placeholder="Display name"
-                />
-              </Field>
-            </div>
-            <div className={advancedOpen ? "space-y-3" : "hidden"}>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label={t("pi.form.modelApi")}>
-                  <Input
-                    value={model.api}
-                    onChange={(event) =>
-                      updateModel(model.key, { api: event.target.value })
-                    }
-                    list="pi-api-examples"
-                    placeholder={t("pi.form.inherit")}
-                  />
-                </Field>
-                <Field label={t("pi.form.modelBaseUrl")}>
-                  <Input
-                    value={model.baseUrl}
-                    onChange={(event) =>
-                      updateModel(model.key, {
-                        baseUrl: event.target.value,
-                      })
-                    }
-                    placeholder={t("pi.form.inherit")}
-                  />
-                </Field>
-              </div>
-              <Field
-                label={t("pi.form.modelAdditionalConfig", {
-                  id: model.id,
-                })}
-              >
-                <Textarea
-                  value={model.additionalJson}
-                  onChange={(event) =>
-                    updateModel(model.key, {
-                      additionalJson: event.target.value,
-                    })
-                  }
-                  className="min-h-32 font-mono text-xs"
-                  spellCheck={false}
-                />
-              </Field>
-            </div>
-          </div>
-        ))}
-      </section>
-
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-        <CollapsibleContent
-          forceMount
-          className="space-y-4 pt-2 data-[state=closed]:hidden"
-        >
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={t("pi.form.providerKey")}>
+          </CollapsibleTrigger>
+          {!advancedOpen && (
+            <p className="mt-1 ml-1 text-xs text-muted-foreground">
+              {t("pi.form.advancedHint")}
+            </p>
+          )}
+          <CollapsibleContent className="space-y-4 pt-3">
+            <Field label={t("pi.form.providerApi")} htmlFor="pi-provider-api">
               <Input
-                value={providerKey}
-                onChange={(event) => setProviderKey(event.target.value)}
-                disabled={isEdit}
-                placeholder="my-provider"
-                autoComplete="off"
-              />
-              <p className="text-xs text-muted-foreground">
-                {t("pi.form.providerKeyHint")}
-              </p>
-            </Field>
-            <Field label={t("pi.form.providerApi")}>
-              <Input
+                id="pi-provider-api"
                 value={api}
                 onChange={(event) => setApi(event.target.value)}
                 list="pi-api-examples"
                 placeholder="openai-responses"
               />
-              <datalist id="pi-api-examples">
-                {PI_API_EXAMPLES.map((value) => (
-                  <option key={value} value={value} />
-                ))}
-              </datalist>
               <p className="text-xs text-muted-foreground">
                 {t("pi.form.inheritanceHint")}
               </p>
             </Field>
-            <Field label={t("pi.form.providerBaseUrl")}>
-              <Input
-                value={baseUrl}
-                onChange={(event) => setBaseUrl(event.target.value)}
-                placeholder="https://api.example.com/v1"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setIsEndpointModalOpen(true)}
-              >
-                {t("pi.form.manageEndpoints")}
-              </Button>
-            </Field>
-            <Field label={t("pi.form.website")}>
-              <Input
-                value={websiteUrl}
-                onChange={(event) => setWebsiteUrl(event.target.value)}
-                placeholder="https://example.com"
-              />
-            </Field>
-          </div>
-          <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
-            <input
-              type="checkbox"
-              checked={authHeader}
-              onChange={(event) => {
-                setAuthHeader(event.target.checked);
-                setAuthHeaderExplicit(true);
-              }}
-              className="mt-0.5"
-            />
-            <span>
-              <span className="font-medium">{t("pi.form.authHeader")}</span>
-              <span className="block text-xs text-muted-foreground">
-                {t("pi.form.authHeaderHint")}
-              </span>
-            </span>
-          </label>
-          <Field label={t("pi.form.headers")}>
-            <Textarea
-              value={headersJson}
-              onChange={(event) => setHeadersJson(event.target.value)}
-              className="min-h-24 font-mono text-xs"
-              spellCheck={false}
-            />
-          </Field>
-          <Field label={t("pi.form.additionalConfig")}>
-            <Textarea
-              value={additionalJson}
-              onChange={(event) => setAdditionalJson(event.target.value)}
-              className="min-h-28 font-mono text-xs"
-              spellCheck={false}
-            />
-            <p className="text-xs text-muted-foreground">
-              {t("pi.form.additionalConfigHint")}
-            </p>
-          </Field>
-          <Field label={t("provider.notes")}>
-            <Textarea
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              className="min-h-20"
-            />
-          </Field>
-        </CollapsibleContent>
-      </Collapsible>
 
-      {showButtons && (
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={onCancel}>
-            {t("common.cancel")}
-          </Button>
-          <Button type="submit">{submitLabel}</Button>
-        </div>
-      )}
-      {isEndpointModalOpen && (
-        <EndpointSpeedTest
-          appId="pi"
-          providerId={providerId}
-          value={baseUrl}
-          onChange={setBaseUrl}
-          initialEndpoints={endpointCandidates}
-          onClose={() => setIsEndpointModalOpen(false)}
-          autoSelect={endpointAutoSelect}
-          onAutoSelectChange={setEndpointAutoSelect}
-          onCustomEndpointsChange={setDraftCustomEndpoints}
-          persistenceMode={isEdit ? "immediate" : "batched"}
-        />
-      )}
-    </form>
+            <EndpointField
+              id="pi-provider-base-url"
+              label={t("pi.form.providerBaseUrl")}
+              value={baseUrl}
+              onChange={setBaseUrl}
+              placeholder="https://api.example.com/v1"
+              showManageButton
+              onManageClick={() => setIsEndpointModalOpen(true)}
+              manageButtonLabel={t("pi.form.manageEndpoints")}
+            />
+
+            {!showDefaultModelSelect && defaultModelSelect}
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label>{t("pi.form.models")}</Label>
+                  <p className="text-xs text-muted-foreground">
+                    {t("pi.form.modelEditorHint")}
+                  </p>
+                </div>
+                <div className="flex gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleFetchModels}
+                    disabled={isFetchingModels}
+                    className="h-7 gap-1"
+                  >
+                    {isFetchingModels ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    {t("providerForm.fetchModels")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={addModel}
+                    className="h-7 gap-1"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {t("pi.form.addModel")}
+                  </Button>
+                </div>
+              </div>
+
+              {models.map((model, index) => (
+                <div
+                  key={model.key}
+                  className="space-y-3 rounded-lg border border-border-default p-4"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">
+                      {model.name ||
+                        model.id ||
+                        t("pi.form.modelNumber", { index: index + 1 })}
+                    </span>
+                    {models.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeModel(model.key)}
+                        aria-label={t("pi.form.removeModel")}
+                        className="h-8 w-8"
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field
+                      label={t("pi.form.modelId")}
+                      htmlFor={`pi-model-id-${model.key}`}
+                    >
+                      <div className="flex gap-1">
+                        <Input
+                          id={`pi-model-id-${model.key}`}
+                          value={model.id}
+                          onChange={(event) =>
+                            updateModel(model.key, { id: event.target.value })
+                          }
+                          placeholder="model-id"
+                          className="flex-1"
+                        />
+                        {fetchedModels.length > 0 && (
+                          <ModelDropdown
+                            models={fetchedModels}
+                            onSelect={(id) => updateModel(model.key, { id })}
+                          />
+                        )}
+                      </div>
+                    </Field>
+                    <Field
+                      label={t("pi.form.modelName")}
+                      htmlFor={`pi-model-name-${model.key}`}
+                    >
+                      <Input
+                        id={`pi-model-name-${model.key}`}
+                        value={model.name}
+                        onChange={(event) =>
+                          updateModel(model.key, { name: event.target.value })
+                        }
+                        placeholder={t("pi.form.modelNamePlaceholder")}
+                      />
+                    </Field>
+                    <Field
+                      label={t("pi.form.modelApi")}
+                      htmlFor={`pi-model-api-${model.key}`}
+                    >
+                      <Input
+                        id={`pi-model-api-${model.key}`}
+                        value={model.api}
+                        onChange={(event) =>
+                          updateModel(model.key, { api: event.target.value })
+                        }
+                        list="pi-api-examples"
+                        placeholder={t("pi.form.inherit")}
+                      />
+                    </Field>
+                    <Field
+                      label={t("pi.form.modelBaseUrl")}
+                      htmlFor={`pi-model-base-url-${model.key}`}
+                    >
+                      <Input
+                        id={`pi-model-base-url-${model.key}`}
+                        value={model.baseUrl}
+                        onChange={(event) =>
+                          updateModel(model.key, {
+                            baseUrl: event.target.value,
+                          })
+                        }
+                        placeholder={t("pi.form.inherit")}
+                      />
+                    </Field>
+                  </div>
+                  <Field
+                    label={t("pi.form.modelAdditionalConfig", {
+                      id: model.id,
+                    })}
+                    htmlFor={`pi-model-additional-${model.key}`}
+                  >
+                    <Textarea
+                      id={`pi-model-additional-${model.key}`}
+                      value={model.additionalJson}
+                      onChange={(event) =>
+                        updateModel(model.key, {
+                          additionalJson: event.target.value,
+                        })
+                      }
+                      className="min-h-32 font-mono text-xs"
+                      spellCheck={false}
+                    />
+                  </Field>
+                </div>
+              ))}
+            </div>
+
+            <label
+              htmlFor="pi-auth-header"
+              className="flex items-center justify-between gap-4 rounded-lg border border-border-default p-3"
+            >
+              <span>
+                <span className="block text-sm font-medium">
+                  {t("pi.form.authHeader")}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {t("pi.form.authHeaderHint")}
+                </span>
+              </span>
+              <Switch
+                id="pi-auth-header"
+                checked={authHeader}
+                onCheckedChange={(checked) => {
+                  setAuthHeader(checked);
+                  setAuthHeaderExplicit(true);
+                }}
+              />
+            </label>
+
+            <Field label={t("pi.form.headers")} htmlFor="pi-provider-headers">
+              <Textarea
+                id="pi-provider-headers"
+                value={headersJson}
+                onChange={(event) => setHeadersJson(event.target.value)}
+                className="min-h-24 font-mono text-xs"
+                spellCheck={false}
+              />
+            </Field>
+
+            <Field
+              label={t("pi.form.additionalConfig")}
+              htmlFor="pi-provider-additional"
+            >
+              <Textarea
+                id="pi-provider-additional"
+                value={additionalJson}
+                onChange={(event) => setAdditionalJson(event.target.value)}
+                className="min-h-28 font-mono text-xs"
+                spellCheck={false}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("pi.form.additionalConfigHint")}
+              </p>
+            </Field>
+          </CollapsibleContent>
+        </Collapsible>
+
+        <datalist id="pi-api-examples">
+          {PI_API_EXAMPLES.map((value) => (
+            <option key={value} value={value} />
+          ))}
+        </datalist>
+
+        {showButtons && (
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={onCancel}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit">{submitLabel}</Button>
+          </div>
+        )}
+        {isEndpointModalOpen && (
+          <EndpointSpeedTest
+            appId="pi"
+            providerId={providerId}
+            value={baseUrl}
+            onChange={setBaseUrl}
+            initialEndpoints={endpointCandidates}
+            onClose={() => setIsEndpointModalOpen(false)}
+            autoSelect={endpointAutoSelect}
+            onAutoSelectChange={setEndpointAutoSelect}
+            onCustomEndpointsChange={setDraftCustomEndpoints}
+            persistenceMode={isEdit ? "immediate" : "batched"}
+          />
+        )}
+      </form>
+    </Form>
   );
 }
 
 function Field({
   label,
+  htmlFor,
   children,
 }: {
   label: string;
+  htmlFor: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="space-y-1.5">
-      <Label>{label}</Label>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
     </div>
   );

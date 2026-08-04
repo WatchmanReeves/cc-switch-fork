@@ -60,7 +60,6 @@ import {
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
-import { PiNativeCatalogPanel } from "@/components/providers/PiNativeCatalogPanel";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -984,12 +983,6 @@ function App() {
                     transition={{ duration: 0.15 }}
                     className="space-y-4"
                   >
-                    {activeApp === "pi" && (
-                      <PiNativeCatalogPanel
-                        providers={providers}
-                        onCreate={() => setIsAddOpen(true)}
-                      />
-                    )}
                     <ProviderList
                       providers={providers}
                       currentProviderId={currentProviderId}

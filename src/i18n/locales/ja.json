@@ -109,6 +109,8 @@
     "currentlyUsing": "現在使用中",
     "enable": "有効化",
     "inUse": "使用中",
+    "needsRouting": "ルーティングが必要",
+    "noRoutingSupport": "ルーティング非対応",
     "blockedByProxyHint": "プロキシ引き継ぎモードでは公式プロバイダーに切り替えできません",
     "editProvider": "プロバイダーを編集",
     "editProviderHint": "保存すると現在のプロバイダーにすぐ反映されます。",
@@ -895,34 +897,40 @@
     "pi": "Pi"
   },
   "pi": {
+    "empty": {
+      "title": "API キープロバイダーはまだありません",
+      "description": "右上の + から、プリセットまたはカスタムプロバイダーを追加できます。"
+    },
     "form": {
       "providerKey": "プロバイダーキー",
       "providerKeyHint": "Pi が models.json で使用する固定キーです。作成後は変更できません。",
       "providerKeyRequired": "プロバイダーキーを入力してください",
-      "displayName": "表示名",
       "nameRequired": "表示名を入力してください",
       "providerApi": "プロバイダー API",
       "providerBaseUrl": "プロバイダーのベース URL",
       "manageEndpoints": "フェイルオーバーエンドポイントを管理",
-      "credential": "認証情報",
+      "credential": "API キー",
       "credentialRequired": "このプリセットの API キーを入力してください",
-      "credentialHint": "Pi はリテラル、$ENV 参照、または !command 式を受け付けます。遅延値は Pi が解決した後にのみ検証されます。",
-      "website": "Web サイト",
-      "authHeader": "認証情報を Authorization として送信",
-      "authHeaderHint": "対応する API ファミリーでは Pi の authHeader 動作を使用します。Anthropic OAuth 認証情報は、検証済みのゲートウェイ転送方式で処理されます。",
+      "apiKeyPlaceholder": "API キーを入力",
+      "authHeader": "API キーを Authorization として送信",
+      "authHeaderHint": "上流 API が必要とする場合、API キーを Authorization ヘッダーで送信します。",
       "headers": "カスタムヘッダー（JSON）",
       "headersStringValues": "カスタムヘッダーの値はすべて文字列で指定してください",
       "jsonObjectRequired": "{{label}} は JSON オブジェクトで指定してください",
       "nonFiniteNumber": "{{label}} に有限でない数値が含まれています",
       "absoluteHttpUrlRequired": "{{label}} は絶対 HTTP または HTTPS URL で指定してください",
       "models": "モデル",
-      "modelsHint": "各モデルはプロバイダーの API とベース URL を継承できます。モデルオブジェクト全体が models.json に保持されます。",
+      "modelsHint": "デフォルトモデルを選択します。保存後も他のモデルを利用できます。",
       "addModel": "モデルを追加",
       "modelNumber": "モデル {{index}}",
       "removeModel": "モデルを削除",
       "modelId": "モデル ID",
       "modelIdRequired": "モデル {{index}} に ID が必要です",
       "modelName": "表示名",
+      "modelNamePlaceholder": "表示名",
+      "defaultModel": "デフォルトモデル",
+      "defaultModelPlaceholder": "デフォルトモデルを選択",
+      "modelEditorHint": "このプロバイダーで利用できるモデルを編集します。",
       "modelApi": "モデル API",
       "modelBaseUrl": "モデルのベース URL",
       "modelBaseUrlFor": "モデル {{id}} のベース URL",
@@ -935,50 +943,15 @@
       "modelAdditionalConfig": "モデル {{id}} の追加設定（JSON）",
       "additionalConfig": "プロバイダーの追加設定（JSON）",
       "additionalConfigHint": "未認識の Pi フィールドは保持されます。上に表示された管理対象フィールドが優先されます。",
-      "stepPreset": "1. プロバイダーを選択",
-      "presetHint": "管理済みプリセットから始めるか、カスタムを選択します。ゲートウェイの可否は完成した設定から判定されます。",
-      "stepAuth": "2. 認証情報を入力",
-      "managedCredentialHint": "ここでは CC Switch 管理の API キープロバイダーを作成します。Pi のサブスクリプションログインは Pi が管理します。",
-      "nativeLoginAlternative": "Pi のサブスクリプションを使用する場合は、ここで管理対象プロバイダーを作らず、プロバイダーページから Pi ネイティブログインを使用してください。",
-      "stepModel": "3. モデルを選択",
-      "advanced": "詳細設定",
+      "advancedHint": "エンドポイント、プロトコル、ヘッダー、モデルの詳細を設定します。",
       "endpointChangesImmediate": "エンドポイントの所属はこのフォームとは独立しており、追加と削除は直ちに反映されます。"
     },
     "current": {
-      "title": "Pi が現在使用中",
-      "description": "Pi の現在の選択と実際の経路を、単一のバックエンドスナップショットから表示します。",
-      "addManaged": "API キープロバイダーを追加",
-      "nativeLogin": "Pi ネイティブログインを使用",
-      "nativeLoginTitle": "Pi でサインイン",
-      "nativeLoginStep1": "ターミナルで Pi を起動します。",
-      "nativeLoginStep2": "/login を実行し、Pi のログインを完了します。",
-      "nativeLoginStep3": "/model でプロバイダーとモデルを選び、このページを更新します。",
-      "nativeDirectNote": "認証情報は Pi 内に保持され、CC Switch にはコピーされません。この経路は直接接続のままで、CC Switch のフェイルオーバーには追加されません。",
-      "changeManagedDefault": "管理対象のデフォルトを変更",
-      "failoverOwnsDefault": "自動フェイルオーバーが有効です。管理対象のデフォルトはキューのプライマリによって制御されるため、ここで変更する前にフェイルオーバーを無効にしてください。",
-      "failoverDirectOverride": "Pi は管理対象ゲートウェイ経路を使用していないため、この選択では自動フェイルオーバーは動作しません。",
-      "detected": "Pi で検出（{{count}}）",
-      "diagnosticsHint": "以下は互換性の検査結果であり、上に表示された実際の経路ではありません。",
       "ownership": {
         "managed": "CC Switch 管理",
         "pi_native": "Pi ネイティブ設定",
         "external": "外部 Pi 設定",
         "unconfigured": "未設定"
-      },
-      "route": {
-        "gateway": "ゲートウェイ",
-        "direct": "直接接続",
-        "unavailable": "要確認"
-      },
-      "reason": {
-        "unconfigured": "Pi でプロバイダーとモデルを選択してください。",
-        "native_direct": "Pi はこのプロバイダーへ直接接続しています。",
-        "managed_gateway": "管理対象ゲートウェイ投影が有効です。",
-        "managed_direct": "この管理対象プロバイダーは直接接続で有効です。",
-        "managed_projection_mismatch": "Pi の現在値が管理対象の直接接続またはゲートウェイ投影と一致しません。更新するか再度切り替えてください。",
-        "failover_primary_mismatch": "Pi が選択した管理対象プロバイダーはフェイルオーバーキューの P1 ではありません。自動フェイルオーバーを無効にするか、P1 に戻してください。",
-        "native_catalog_unavailable": "この組み込みモデルカタログは Pi が管理するため、CC Switch では選択中のモデルを検証できません。",
-        "selection_unavailable": "Pi で選択中のプロバイダーまたはモデルは利用できません。Pi で選び直してください。"
       }
     },
     "failover": {
@@ -987,29 +960,7 @@
       "compatibilityHint": "Pi は、同じモデル ID を公開し、API とリクエストプロファイルに互換性がある後続プロバイダーのみ再試行します。キューへの追加は、すべてのモデルを引き継げることを意味しません。"
     },
     "native": {
-      "title": "Pi ネイティブモデルカタログ",
-      "description": "認証済み分類器を通じて実際の Pi models.json を検査します。明示的な操作時のみインポートし、Pi のネイティブファイルを正とします。",
-      "empty": "Pi models.json にプロバイダーがありません。",
-      "defaultProvider": "デフォルトプロバイダー",
-      "defaultModel": "デフォルトモデル",
-      "setDefault": "デフォルトに設定",
-      "currentDefault": "現在のデフォルト",
-      "defaultSaved": "Pi のデフォルトモデルを更新しました",
-      "defaultSaveFailed": "Pi のデフォルトモデルを更新できませんでした",
-      "unmanagedDefault": "Pi は現在、管理対象外のプロバイダー {{provider}} / {{model}} を選択しています。インポートするか、管理対象のデフォルトを選択してください。",
-      "imported": "Pi プロバイダーをインポートしました",
-      "importFailed": "Pi プロバイダーをインポートできませんでした",
-      "managed": "管理対象",
-      "management": {
-        "importable": "インポート可能",
-        "managed": "管理対象",
-        "unsupported": "未対応"
-      },
-      "gateway": {
-        "proxyable": "ゲートウェイ利用可能",
-        "direct_only": "直接接続のみ",
-        "unknown": "不明"
-      }
+      "imported": "Pi プロバイダーをインポートしました"
     },
     "prompts": {
       "nativeTitle": "Pi ネイティブプロンプトリソース",
